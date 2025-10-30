@@ -11,6 +11,14 @@ local StarterPlayer = game:GetService("StarterPlayer")
 local toolbar = plugin:CreateToolbar("GUI Tools")
 local button = toolbar:CreateButton("Convert GUI to LocalScript", "Convert selected GUI into a LocalScript that recreates it", "rbxassetid://4458901886")
 
+local contextualAction = plugin:CreatePluginAction(
+	"GUIConvert_ContextualConvert",
+	"Convert GUI to Script",
+	"Converts the selected GUI to a script using last saved settings",
+	"rbxassetid://4458901886",
+	false
+)
+
 -- UI Konfigurasi untuk Plugin
 local configWidget = plugin:CreateDockWidgetPluginGui("GUIConverterConfig", DockWidgetPluginGuiInfo.new(
 	Enum.InitialDockState.Float, true, false, 220, 280 -- Ukuran tetap
@@ -46,8 +54,20 @@ local function createUI()
 	titleLabel.BackgroundTransparency = 1
 	titleLabel.Parent = mainFrame
 
+	local selectionLabel = Instance.new("TextLabel")
+	selectionLabel.Name = "SelectionLabel"
+	selectionLabel.LayoutOrder = 2
+	selectionLabel.Text = "Terpilih: Tidak ada"
+	selectionLabel.Size = UDim2.new(1, 0, 0, 18)
+	selectionLabel.Font = Enum.Font.SourceSansItalic
+	selectionLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+	selectionLabel.TextSize = 13
+	selectionLabel.BackgroundTransparency = 1
+	selectionLabel.TextXAlignment = Enum.TextXAlignment.Left
+	selectionLabel.Parent = mainFrame
+
 	local typeLabel = Instance.new("TextLabel")
-	typeLabel.LayoutOrder = 2
+	typeLabel.LayoutOrder = 3
 	typeLabel.Text = "Output Script Type:"
 	typeLabel.Size = UDim2.new(1, 0, 0, 15)
 	typeLabel.Font = Enum.Font.SourceSans
@@ -63,7 +83,7 @@ local function createUI()
 
 	local scriptTypeButton = Instance.new("TextButton")
 	scriptTypeButton.Name = "ScriptTypeButton"
-	scriptTypeButton.LayoutOrder = 3
+	scriptTypeButton.LayoutOrder = 4
 	scriptTypeButton.Text = savedScriptType
 	scriptTypeButton.Size = UDim2.new(1, 0, 0, 28)
 	scriptTypeButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
@@ -78,7 +98,7 @@ local function createUI()
 
 	local commentsButton = Instance.new("TextButton")
 	commentsButton.Name = "CommentsButton"
-	commentsButton.LayoutOrder = 4
+	commentsButton.LayoutOrder = 5
 	commentsButton.Size = UDim2.new(1, 0, 0, 28)
 	commentsButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
 	commentsButton.TextColor3 = Color3.fromRGB(220, 220, 220)
@@ -101,7 +121,7 @@ local function createUI()
 
 	local overwriteButton = Instance.new("TextButton")
 	overwriteButton.Name = "OverwriteButton"
-	overwriteButton.LayoutOrder = 5
+	overwriteButton.LayoutOrder = 6
 	overwriteButton.Size = UDim2.new(1, 0, 0, 28)
 	overwriteButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
 	overwriteButton.TextColor3 = Color3.fromRGB(220, 220, 220)
@@ -120,7 +140,7 @@ local function createUI()
 
 	local convertButton = Instance.new("TextButton")
 	convertButton.Name = "ConvertButton"
-	convertButton.LayoutOrder = 6
+	convertButton.LayoutOrder = 7
 	convertButton.Text = "Convert"
 	convertButton.Size = UDim2.new(1, 0, 0, 32)
 	convertButton.BackgroundColor3 = Color3.fromRGB(80, 120, 200)
@@ -131,7 +151,7 @@ local function createUI()
 
 	local exampleCodeButton = Instance.new("TextButton")
 	exampleCodeButton.Name = "ExampleCodeButton"
-	exampleCodeButton.LayoutOrder = 7
+	exampleCodeButton.LayoutOrder = 8
 	exampleCodeButton.Text = "Get Example Code"
 	exampleCodeButton.Size = UDim2.new(1, 0, 0, 28)
 	exampleCodeButton.BackgroundColor3 = Color3.fromRGB(90, 90, 90)
@@ -142,7 +162,7 @@ local function createUI()
 
 	local statusLabel = Instance.new("TextLabel")
 	statusLabel.Name = "StatusLabel"
-	statusLabel.LayoutOrder = 8
+	statusLabel.LayoutOrder = 9
 	statusLabel.Size = UDim2.new(1, 0, 0, 20)
 	statusLabel.Font = Enum.Font.SourceSans
 	statusLabel.Text = ""
@@ -168,6 +188,7 @@ local function createUI()
 	end)
 
 	return {
+		SelectionLabel = selectionLabel,
 		ScriptTypeButton = scriptTypeButton,
 		IsCommentsEnabled = function() return commentsEnabled end,
 		IsOverwriteEnabled = function() return overwriteEnabled end,
@@ -529,6 +550,26 @@ local function createFile(generated, rootName, settings)
 end
 
 -- Hubungkan Logika
+local function updateSelectionDisplay()
+	local sel = Selection:Get()
+	if sel and #sel > 0 then
+		local obj = sel[1]
+		if isGuiObject(obj) or obj:IsA("ScreenGui") then
+			controls.SelectionLabel.Text = string.format("Terpilih: %s (%s)", obj.Name, obj.ClassName)
+			controls.SelectionLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
+		else
+			controls.SelectionLabel.Text = "Terpilih: Objek tidak valid"
+			controls.SelectionLabel.TextColor3 = Color3.fromRGB(255, 180, 180)
+		end
+	else
+		controls.SelectionLabel.Text = "Terpilih: Tidak ada"
+		controls.SelectionLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+	end
+end
+
+Selection.SelectionChanged:Connect(updateSelectionDisplay)
+updateSelectionDisplay() -- Panggil sekali untuk status awal
+
 button.Click:Connect(function()
 	configWidget.Enabled = not configWidget.Enabled
 end)
@@ -604,3 +645,44 @@ local function handleGetExampleCode()
 end
 
 controls.ExampleCodeButton.MouseButton1Click:Connect(handleGetExampleCode)
+
+local function handleContextualConversion(selection)
+	-- Muat pengaturan dari penyimpanan, dengan nilai default
+	local settings = {
+		ScriptType = plugin:GetSetting("ScriptType") or "ModuleScript",
+		AddTraceComments = plugin:GetSetting("AddTraceComments") ~= false, -- Default to true
+		OverwriteExisting = plugin:GetSetting("OverwriteExisting") ~= false, -- Default to true
+	}
+	local blacklistText = plugin:GetSetting("PropertyBlacklist") or "Position,Size"
+
+	-- Buat objek controls tiruan untuk diteruskan ke generateLuaForGui
+	local fakeControls = {
+		BlacklistTextbox = { Text = blacklistText }
+	}
+
+	-- Lakukan konversi
+	local root = selection[1]
+	if not root then
+		warn("[GUIConvert] No object selected for contextual conversion.")
+		return
+	end
+
+	if not (isGuiObject(root) or root:IsA("ScreenGui")) then
+		warn("[GUIConvert] Selected object is not a valid GUI for contextual conversion.")
+		return
+	end
+
+	-- Karena performConversion mengakses 'controls' secara global, kita tidak bisa memanggilnya secara langsung.
+	-- Kita panggil bagian intinya.
+	local success, generated = pcall(function() return generateLuaForGui(root, settings, fakeControls) end)
+	if not success then
+		warn("[GUIConvert] Gagal menghasilkan kode:", generated)
+		return
+	end
+
+	local resultName = root.Name
+	local successMsg = createFile(generated, resultName, settings)
+	print("[GUIConvert] " .. successMsg)
+end
+
+contextualAction.Triggered:Connect(handleContextualConversion)
