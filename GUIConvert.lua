@@ -19,13 +19,244 @@ local contextualAction = plugin:CreatePluginAction(
 	false
 )
 
+local controls -- Dideklarasikan di sini untuk mengatasi dependensi sirkular
+
 -- UI Konfigurasi untuk Plugin
 local configWidget = plugin:CreateDockWidgetPluginGui("GUIConverterConfig", DockWidgetPluginGuiInfo.new(
-	Enum.InitialDockState.Float, true, false, 220, 280 -- Ukuran tetap
+	Enum.InitialDockState.Float, true, false, 240, 480 -- Ukuran diubah untuk daftar checkbox
 	))
 configWidget.Title = "GUI Converter"
 
+-- Daftar properti GUI yang akan di-serialize
+local COMMON_PROPERTIES = {
+	"Name","AnchorPoint","AutomaticSize","Position","Rotation","Size","Visible","ZIndex","LayoutOrder",
+	"BackgroundColor3","BackgroundTransparency","BorderSizePixel","Image","ImageTransparency","ImageColor3","ScaleType","SliceCenter","SliceScale","ImageRectOffset","ImageRectSize","ClipsDescendants",
+	"Text","TextColor3","TextSize","TextScaled","Font","TextWrapped","TextXAlignment","TextYAlignment","TextTransparency","TextStrokeTransparency","TextStrokeColor3","PlaceholderText","PlaceholderColor3","TextEditable",
+	"AutoButtonColor","ResetOnSpawn","Selectable","Modal","Style"
+}
+
+local PROPERTIES_BY_CLASS = {
+	UICorner = {"CornerRadius"},
+	UIGradient = {"Color", "Enabled", "Offset", "Rotation", "Transparency"},
+	UIStroke = {"ApplyStrokeMode", "Color", "Enabled", "LineJoinMode", "Thickness", "Transparency"},
+	UIAspectRatioConstraint = {"AspectRatio", "AspectType", "DominantAxis"},
+	UIGridLayout = {"AbsoluteContentSize", "CellPadding", "CellSize", "FillDirection", "HorizontalAlignment", "SortOrder", "StartCorner", "VerticalAlignment"},
+	UIListLayout = {"AbsoluteContentSize", "FillDirection", "HorizontalAlignment", "Padding", "SortOrder", "VerticalAlignment"},
+	UIPadding = {"PaddingBottom", "PaddingLeft", "PaddingRight", "PaddingTop"},
+	UIScale = {"Scale"},
+	UISizeConstraint = {"MaxSize", "MinSize"},
+	UITextSizeConstraint = {"MaxTextSize", "MinTextSize"}
+}
+
+-- Variabel untuk manajemen Live Sync
+local syncingInstance = nil
+local syncingScript = nil
+local syncConnections = {}
+local debounceTimer = nil
+local lastSyncSettings = nil
+
+local function isGuiObject(inst)
+	return inst and inst:IsA("GuiObject")
+end
+
+local function quoteString(s)
+	return string.format("%q", tostring(s))
+end
+
+local function roundDecimal(n)
+	if typeof(n) ~= "number" then return n end
+	return math.floor(n * 10000 + 0.5) / 10000
+end
+
+local function serializeValue(v)
+	local t = typeof(v)
+	if t == "UDim2" then
+		return string.format("UDim2.new(%s, %s, %s, %s)", tostring(roundDecimal(v.X.Scale)), tostring(v.X.Offset), tostring(roundDecimal(v.Y.Scale)), tostring(v.Y.Offset))
+	elseif t == "UDim" then
+		return string.format("UDim.new(%s, %s)", tostring(roundDecimal(v.Scale)), tostring(v.Offset))
+	elseif t == "Vector2" then
+		return string.format("Vector2.new(%s, %s)", tostring(roundDecimal(v.X)), tostring(roundDecimal(v.Y)))
+	elseif t == "Vector3" then
+		return string.format("Vector3.new(%s, %s, %s)", tostring(roundDecimal(v.X)), tostring(roundDecimal(v.Y)), tostring(roundDecimal(v.Z)))
+	elseif t == "Color3" then
+		local r = math.floor(v.R * 255 + 0.5)
+		local g = math.floor(v.G * 255 + 0.5)
+		local b = math.floor(v.B * 255 + 0.5)
+		return string.format("Color3.fromRGB(%d, %d, %d)", r, g, b)
+	elseif t == "ColorSequence" then
+		local keypoints = {}
+		for _, keypoint in ipairs(v.Keypoints) do
+			table.insert(keypoints, string.format("ColorSequenceKeypoint.new(%s, %s)", tostring(keypoint.Time), serializeValue(keypoint.Value)))
+		end
+		return string.format("ColorSequence.new({%s})", table.concat(keypoints, ", "))
+	elseif t == "NumberSequence" then
+		local keypoints = {}
+		for _, keypoint in ipairs(v.Keypoints) do
+			table.insert(keypoints, string.format("NumberSequenceKeypoint.new(%s, %s)", tostring(keypoint.Time), tostring(keypoint.Value)))
+		end
+		return string.format("NumberSequence.new({%s})", table.concat(keypoints, ", "))
+	elseif t == "EnumItem" then
+		return tostring(v)
+	elseif t == "boolean" then
+		return tostring(v)
+	elseif t == "number" then
+		return tostring(v)
+	elseif t == "string" then
+		return quoteString(v)
+	else
+		return quoteString(tostring(v))
+	end
+end
+
+local function generateSafeVarName(s)
+	if not s or s == "" then return "obj" end
+	local name = tostring(s):gsub("%s+(%w)", function(c) return c:upper() end):gsub("[^%w_]", "")
+	if name:match("^[0-9]") then name = "v" .. name end
+	if #name > 0 then name = name:sub(1,1):lower() .. name:sub(2) end
+	if name == "" then return "unnamedGui" end
+	return name
+end
+
+local classDefaults = {}
+local function getClassDefaultValue(className, prop)
+	if classDefaults[className] == nil then
+		local ok, inst = pcall(function() return Instance.new(className) end)
+		classDefaults[className] = (ok and inst) and inst or false
+	end
+	local inst = classDefaults[className]
+	if not inst then return nil, false end
+	local ok, val = pcall(function() return inst[prop] end)
+	if ok then return val, true end
+	return nil, false
+end
+
+local function getRelativePath(instance, root)
+	local path = {}
+	local current = instance
+	while current and current ~= root do
+		table.insert(path, 1, current.Name)
+		current = current.Parent
+	end
+	if current == root then
+		table.insert(path, 1, root.Name)
+		return table.concat(path, ".")
+	else
+		return instance:GetFullName() -- Fallback
+	end
+end
+
+local function valuesEqual(a, b)
+	if a == nil and b == nil then return true end
+	if a == nil or b == nil then return false end
+	local ta, tb = typeof(a), typeof(b)
+	if ta ~= tb then return false end
+	if ta == "UDim2" or ta == "UDim" or ta == "Vector2" or ta == "Vector3" or ta == "Color3" or ta == "EnumItem" or ta == "boolean" or ta == "number" or ta == "string" then
+		return a == b
+	end
+	return tostring(a) == tostring(b)
+end
+
 -- Membuat elemen UI secara terprogram
+
+local function stopSyncing()
+	if not syncingInstance then return end
+
+	print("[GUIConvert] Menghentikan sinkronisasi untuk " .. syncingInstance:GetFullName())
+	for _, connection in ipairs(syncConnections) do
+		connection:Disconnect()
+	end
+	syncConnections = {}
+	syncingInstance = nil
+	syncingScript = nil
+	if debounceTimer then
+		task.cancel(debounceTimer)
+		debounceTimer = nil
+	end
+	if controls and controls.StatusLabel then
+		controls.StatusLabel.Visible = false
+		controls.StatusLabel.Text = ""
+	end
+end
+
+local function reSync()
+	if not syncingInstance or not syncingScript or not lastSyncSettings then return end
+
+	-- Batalkan timer sebelumnya untuk debounce
+	if debounceTimer then
+		task.cancel(debounceTimer)
+	end
+	
+	controls.StatusLabel.Text = "Status: Mengetik..."
+	controls.StatusLabel.TextColor3 = Color3.fromRGB(255, 200, 120)
+	controls.StatusLabel.Visible = true
+
+	debounceTimer = task.delay(0.5, function()
+		if not syncingInstance or not syncingInstance.Parent then
+			stopSyncing()
+			return
+		end
+
+		local success, generated = pcall(function() return generateLuaForGui(syncingInstance, lastSyncSettings) end)
+		if success then
+			syncingScript.Source = generated
+			controls.StatusLabel.Text = "Status: Tersinkronisasi"
+			controls.StatusLabel.TextColor3 = Color3.fromRGB(120, 255, 120)
+		else
+			warn("[GUIConvert] Gagal melakukan sinkronisasi ulang:", generated)
+			controls.StatusLabel.Text = "Status: Kesalahan Sinkronisasi!"
+			controls.StatusLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
+		end
+	end)
+end
+
+local function startSyncing(guiObject, script, settings)
+	stopSyncing() -- Selalu hentikan sesi sebelumnya
+
+	syncingInstance = guiObject
+	syncingScript = script
+	lastSyncSettings = settings
+	
+	local function connectInstance(inst)
+		local propsToWatch, propSet = {}, {}
+		if inst:IsA("GuiObject") then
+			for _, prop in ipairs(COMMON_PROPERTIES) do if not propSet[prop] then table.insert(propsToWatch, prop); propSet[prop] = true end end
+		end
+		local classSpecificProps = PROPERTIES_BY_CLASS[inst.ClassName]
+		if classSpecificProps then
+			for _, prop in ipairs(classSpecificProps) do if not propSet[prop] then table.insert(propsToWatch, prop); propSet[prop] = true end end
+		end
+
+		for _, prop in ipairs(propsToWatch) do
+			local success, signal = pcall(function()
+				return inst:GetPropertyChangedSignal(prop)
+			end)
+			if success and signal then
+				table.insert(syncConnections, signal:Connect(reSync))
+			end
+		end
+	end
+
+	-- Hubungkan ke semua instance yang ada
+	for _, inst in ipairs(guiObject:GetDescendants()) do
+		connectInstance(inst)
+	end
+	connectInstance(guiObject) -- Jangan lupa root objectnya
+
+	-- Hubungkan ke instance yang akan datang
+	table.insert(syncConnections, guiObject.DescendantAdded:Connect(function(descendant)
+		connectInstance(descendant)
+		reSync()
+	end))
+
+	-- Hubungkan ke instance yang dihapus
+	table.insert(syncConnections, guiObject.DescendantRemoving:Connect(reSync))
+
+	print("[GUIConvert] Memulai sinkronisasi untuk " .. guiObject:GetFullName())
+	controls.StatusLabel.Text = "Status: Sinkronisasi aktif"
+	controls.StatusLabel.TextColor3 = Color3.fromRGB(120, 255, 120)
+	controls.StatusLabel.Visible = true
+end
+
 local function createUI()
 	local mainFrame = Instance.new("Frame")
 	mainFrame.Size = UDim2.new(1, 0, 1, 0)
@@ -92,6 +323,15 @@ local function createUI()
 	scriptTypeButton.TextSize = 14
 	scriptTypeButton.Parent = mainFrame
 
+	local function updateScriptTypeButton()
+		if scriptTypeButton.Text == "ModuleScript" then
+			scriptTypeButton.BackgroundColor3 = Color3.fromRGB(120, 80, 180) -- Ungu
+		else
+			scriptTypeButton.BackgroundColor3 = Color3.fromRGB(80, 120, 200) -- Biru
+		end
+	end
+	updateScriptTypeButton()
+
 	local savedAddComments = plugin:GetSetting("AddTraceComments")
 	if savedAddComments == nil then savedAddComments = true end
 	local commentsEnabled = savedAddComments
@@ -103,14 +343,15 @@ local function createUI()
 	commentsButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
 	commentsButton.TextColor3 = Color3.fromRGB(220, 220, 220)
 	commentsButton.Font = Enum.Font.SourceSans
+	commentsButton.Text = "Trace Comments"
 	commentsButton.TextSize = 14
 	commentsButton.Parent = mainFrame
 
 	local function updateCommentsButton()
 		if commentsEnabled then
-			commentsButton.Text = "✓  Add Trace Comments"
+			commentsButton.BackgroundColor3 = Color3.fromRGB(80, 160, 80) -- Hijau
 		else
-			commentsButton.Text = "✗  Add Trace Comments"
+			commentsButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80) -- Merah
 		end
 	end
 	updateCommentsButton()
@@ -126,21 +367,129 @@ local function createUI()
 	overwriteButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
 	overwriteButton.TextColor3 = Color3.fromRGB(220, 220, 220)
 	overwriteButton.Font = Enum.Font.SourceSans
+	overwriteButton.Text = "Overwrite Existing"
 	overwriteButton.TextSize = 14
 	overwriteButton.Parent = mainFrame
 
 	local function updateOverwriteButton()
 		if overwriteEnabled then
-			overwriteButton.Text = "✓  Overwrite Existing"
+			overwriteButton.BackgroundColor3 = Color3.fromRGB(80, 160, 80) -- Hijau
 		else
-			overwriteButton.Text = "✗  Overwrite Existing"
+			overwriteButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80) -- Merah
 		end
 	end
 	updateOverwriteButton()
 
+	local savedLiveSync = plugin:GetSetting("LiveSyncEnabled")
+	if savedLiveSync == nil then savedLiveSync = false end
+	local liveSyncEnabled = savedLiveSync
+
+	local liveSyncButton = Instance.new("TextButton")
+	liveSyncButton.Name = "LiveSyncButton"
+	liveSyncButton.LayoutOrder = 7
+	liveSyncButton.Size = UDim2.new(1, 0, 0, 28)
+	liveSyncButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+	liveSyncButton.TextColor3 = Color3.fromRGB(220, 220, 220)
+	liveSyncButton.Font = Enum.Font.SourceSans
+	liveSyncButton.Text = "Live Sync"
+	liveSyncButton.TextSize = 14
+	liveSyncButton.Parent = mainFrame
+
+	local function updateLiveSyncButton()
+		if liveSyncEnabled then
+			liveSyncButton.BackgroundColor3 = Color3.fromRGB(80, 160, 80) -- Hijau
+		else
+			liveSyncButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80) -- Merah
+		end
+	end
+	updateLiveSyncButton()
+
+	liveSyncButton.MouseButton1Click:Connect(function()
+		liveSyncEnabled = not liveSyncEnabled
+		updateLiveSyncButton()
+		if not liveSyncEnabled then
+			stopSyncing()
+		end
+	end)
+
+	local blacklistLabel = Instance.new("TextLabel")
+	blacklistLabel.LayoutOrder = 8
+	blacklistLabel.Text = "Property Blacklist:"
+	blacklistLabel.Size = UDim2.new(1, 0, 0, 15)
+	blacklistLabel.Font = Enum.Font.SourceSans
+	blacklistLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+	blacklistLabel.TextSize = 13
+	blacklistLabel.TextXAlignment = Enum.TextXAlignment.Left
+	blacklistLabel.BackgroundTransparency = 1
+	blacklistLabel.Parent = mainFrame
+	
+	local blacklistFrame = Instance.new("ScrollingFrame")
+	blacklistFrame.LayoutOrder = 9
+	blacklistFrame.Size = UDim2.new(1, 0, 1, -270)
+	blacklistFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	blacklistFrame.BorderSizePixel = 1
+	blacklistFrame.BorderColor3 = Color3.fromRGB(50, 50, 50)
+	blacklistFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+	blacklistFrame.ScrollBarThickness = 6
+	blacklistFrame.Parent = mainFrame
+
+	local gridLayout = Instance.new("UIGridLayout")
+	gridLayout.CellSize = UDim2.new(0, 95, 0, 22)
+	gridLayout.CellPadding = UDim2.new(0, 4, 0, 4)
+	gridLayout.SortOrder = Enum.SortOrder.Name
+	gridLayout.Parent = blacklistFrame
+	
+	-- Buat dan isi checkbox blacklist
+	local blacklistCheckboxes = {}
+	local allProps = {}
+	local propSet = {}
+	for _, p in ipairs(COMMON_PROPERTIES) do if not propSet[p] then table.insert(allProps, p); propSet[p] = true end end
+	for _, classProps in pairs(PROPERTIES_BY_CLASS) do
+		for _, p in ipairs(classProps) do if not propSet[p] then table.insert(allProps, p); propSet[p] = true end end
+	end
+	table.sort(allProps)
+
+	local savedBlacklistStr = plugin:GetSetting("PropertyBlacklist") or "Position,Size"
+	local savedBlacklist = {}
+	for propName in string.gmatch(savedBlacklistStr, "[^,]+") do
+		savedBlacklist[propName:match("^%s*(.-)%s*$")] = true
+	end
+
+	for _, propName in ipairs(allProps) do
+		local checkbox = Instance.new("TextButton")
+		checkbox.Name = propName
+		checkbox.Text = propName
+		checkbox.Font = Enum.Font.SourceSans
+		checkbox.TextSize = 13
+		checkbox.TextColor3 = Color3.fromRGB(200, 200, 200)
+		checkbox.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+		checkbox.Parent = blacklistFrame
+
+		local isBlacklisted = savedBlacklist[propName] or false
+		
+		local function updateCheckboxVisuals()
+			if isBlacklisted then
+				checkbox.BackgroundColor3 = Color3.fromRGB(180, 80, 80) -- Merah (di-blacklist)
+			else
+				checkbox.BackgroundColor3 = Color3.fromRGB(80, 80, 80) -- Abu-abu (tidak di-blacklist)
+			end
+		end
+		
+		checkbox.MouseButton1Click:Connect(function()
+			isBlacklisted = not isBlacklisted
+			updateCheckboxVisuals()
+		end)
+		
+		blacklistCheckboxes[propName] = {
+			IsBlacklisted = function() return isBlacklisted end,
+			Button = checkbox
+		}
+		updateCheckboxVisuals()
+	end
+
 	local convertButton = Instance.new("TextButton")
 	convertButton.Name = "ConvertButton"
-	convertButton.LayoutOrder = 7
+	convertButton.LayoutOrder = 10
 	convertButton.Text = "Convert"
 	convertButton.Size = UDim2.new(1, 0, 0, 32)
 	convertButton.BackgroundColor3 = Color3.fromRGB(80, 120, 200)
@@ -151,7 +500,7 @@ local function createUI()
 
 	local exampleCodeButton = Instance.new("TextButton")
 	exampleCodeButton.Name = "ExampleCodeButton"
-	exampleCodeButton.LayoutOrder = 8
+	exampleCodeButton.LayoutOrder = 11
 	exampleCodeButton.Text = "Get Example Code"
 	exampleCodeButton.Size = UDim2.new(1, 0, 0, 28)
 	exampleCodeButton.BackgroundColor3 = Color3.fromRGB(90, 90, 90)
@@ -162,7 +511,7 @@ local function createUI()
 
 	local statusLabel = Instance.new("TextLabel")
 	statusLabel.Name = "StatusLabel"
-	statusLabel.LayoutOrder = 9
+	statusLabel.LayoutOrder = 12
 	statusLabel.Size = UDim2.new(1, 0, 0, 20)
 	statusLabel.Font = Enum.Font.SourceSans
 	statusLabel.Text = ""
@@ -175,6 +524,7 @@ local function createUI()
 	scriptTypeButton.MouseButton1Click:Connect(function()
 		currentTypeIndex = (currentTypeIndex % #scriptTypes) + 1
 		scriptTypeButton.Text = scriptTypes[currentTypeIndex]
+		updateScriptTypeButton()
 	end)
 
 	commentsButton.MouseButton1Click:Connect(function()
@@ -190,36 +540,15 @@ local function createUI()
 	return {
 		SelectionLabel = selectionLabel,
 		ScriptTypeButton = scriptTypeButton,
+		BlacklistCheckboxes = blacklistCheckboxes,
 		IsCommentsEnabled = function() return commentsEnabled end,
 		IsOverwriteEnabled = function() return overwriteEnabled end,
+		IsLiveSyncEnabled = function() return liveSyncEnabled end,
 		ConvertButton = convertButton,
 		ExampleCodeButton = exampleCodeButton,
 		StatusLabel = statusLabel,
 	}
 end
-
-local controls = createUI()
-
--- Daftar properti GUI yang akan di-serialize
-local COMMON_PROPERTIES = {
-	"Name","AnchorPoint","AutomaticSize","Position","Rotation","Size","Visible","ZIndex","LayoutOrder",
-	"BackgroundColor3","BackgroundTransparency","BorderSizePixel","Image","ImageTransparency","ImageColor3","ScaleType","SliceCenter","SliceScale","ImageRectOffset","ImageRectSize","ClipsDescendants",
-	"Text","TextColor3","TextSize","TextScaled","Font","TextWrapped","TextXAlignment","TextYAlignment","TextTransparency","TextStrokeTransparency","TextStrokeColor3","PlaceholderText","PlaceholderColor3","TextEditable",
-	"AutoButtonColor","ResetOnSpawn","Selectable","Modal","Style"
-}
-
-local PROPERTIES_BY_CLASS = {
-	UICorner = {"CornerRadius"},
-	UIGradient = {"Color", "Enabled", "Offset", "Rotation", "Transparency"},
-	UIStroke = {"ApplyStrokeMode", "Color", "Enabled", "LineJoinMode", "Thickness", "Transparency"},
-	UIAspectRatioConstraint = {"AspectRatio", "AspectType", "DominantAxis"},
-	UIGridLayout = {"AbsoluteContentSize", "CellPadding", "CellSize", "FillDirection", "HorizontalAlignment", "SortOrder", "StartCorner", "VerticalAlignment"},
-	UIListLayout = {"AbsoluteContentSize", "FillDirection", "HorizontalAlignment", "Padding", "SortOrder", "VerticalAlignment"},
-	UIPadding = {"PaddingBottom", "PaddingLeft", "PaddingRight", "PaddingTop"},
-	UIScale = {"Scale"},
-	UISizeConstraint = {"MaxSize", "MinSize"},
-	UITextSizeConstraint = {"MaxTextSize", "MinTextSize"}
-}
 
 local function isGuiObject(inst)
 	return inst and inst:IsA("GuiObject")
@@ -229,21 +558,26 @@ local function quoteString(s)
 	return string.format("%q", tostring(s))
 end
 
+local function roundDecimal(n)
+	if typeof(n) ~= "number" then return n end
+	return math.floor(n * 10000 + 0.5) / 10000
+end
+
 local function serializeValue(v)
 	local t = typeof(v)
 	if t == "UDim2" then
-		return string.format("UDim2.new(%s,%s,%s,%s)", tostring(v.X.Scale), tostring(v.X.Offset), tostring(v.Y.Scale), tostring(v.Y.Offset))
+		return string.format("UDim2.new(%s, %s, %s, %s)", tostring(roundDecimal(v.X.Scale)), tostring(v.X.Offset), tostring(roundDecimal(v.Y.Scale)), tostring(v.Y.Offset))
 	elseif t == "UDim" then
-		return string.format("UDim.new(%s,%s)", tostring(v.Scale), tostring(v.Offset))
+		return string.format("UDim.new(%s, %s)", tostring(roundDecimal(v.Scale)), tostring(v.Offset))
 	elseif t == "Vector2" then
-		return string.format("Vector2.new(%s,%s)", tostring(v.X), tostring(v.Y))
+		return string.format("Vector2.new(%s, %s)", tostring(roundDecimal(v.X)), tostring(roundDecimal(v.Y)))
 	elseif t == "Vector3" then
-		return string.format("Vector3.new(%s,%s,%s)", tostring(v.X), tostring(v.Y), tostring(v.Z))
+		return string.format("Vector3.new(%s, %s, %s)", tostring(roundDecimal(v.X)), tostring(roundDecimal(v.Y)), tostring(roundDecimal(v.Z)))
 	elseif t == "Color3" then
 		local r = math.floor(v.R * 255 + 0.5)
 		local g = math.floor(v.G * 255 + 0.5)
 		local b = math.floor(v.B * 255 + 0.5)
-		return string.format("Color3.fromRGB(%d,%d,%d)", r, g, b)
+		return string.format("Color3.fromRGB(%d, %d, %d)", r, g, b)
 	elseif t == "ColorSequence" then
 		local keypoints = {}
 		for _, keypoint in ipairs(v.Keypoints) do
@@ -322,6 +656,12 @@ local function collectGuiInstances(root)
 	local queue = {root}
 	while #queue > 0 do
 		local node = table.remove(queue, 1)
+
+		-- Periksa atribut ConvertIgnore. Jika true, lewati instance ini dan semua turunannya.
+		if node:GetAttribute("ConvertIgnore") == true then
+			continue
+		end
+
 		table.insert(list, node)
 		for _, child in ipairs(node:GetChildren()) do
 			if child:IsA("GuiBase") or child:IsA("UIBase") then
@@ -334,21 +674,50 @@ end
 
 local function generateLuaForGui(root, settings)
 	settings = settings or {}
+
+	local blacklistStr = settings.PropertyBlacklist or ""
+	local blacklist = {}
+	for propName in string.gmatch(blacklistStr, "[^,]+") do
+		blacklist[propName:match("^%s*(.-)%s*$")] = true
+	end
+
 	local instances = collectGuiInstances(root)
 	local varMap = {}
 	local lines = {}
 	local rootVarName = ""
 
+	-- Buat Header Informasi
+	local classCounts = {}
+	for _, inst in ipairs(instances) do
+		classCounts[inst.ClassName] = (classCounts[inst.ClassName] or 0) + 1
+	end
+	local statsParts = {}
+	local sortedClasses = {}
+	for className in pairs(classCounts) do table.insert(sortedClasses, className) end
+	table.sort(sortedClasses)
+	for _, className in ipairs(sortedClasses) do
+		table.insert(statsParts, string.format("%s: %d", className, classCounts[className]))
+	end
+	local statsSummary = string.format("Total Instance: %d (%s)", #instances, table.concat(statsParts, ", "))
+
+	local header = {
+		string.format("\tSumber: %s", root:GetFullName()),
+		string.format("\tDibuat pada: %s", os.date("!%Y-%m-%d %H:%M:%S UTC")),
+		string.format("\t%s", statsSummary)
+	}
+	table.insert(lines, "--[[")
+	for _, headerLine in ipairs(header) do table.insert(lines, headerLine) end
+	table.insert(lines, "]]")
+	table.insert(lines, "")
+
 	local isModule = (settings.ScriptType == "ModuleScript")
 	local indent = isModule and "\t" or ""
 
 	if isModule then
-		table.insert(lines, "-- Generated by GUI → ModuleScript plugin")
 		table.insert(lines, "local module = {}")
 		table.insert(lines, "")
 		table.insert(lines, "function module.create(parent)")
 	else
-		table.insert(lines, "-- Generated by GUI → LocalScript plugin")
 		table.insert(lines, "local Players = game:GetService('Players')")
 		table.insert(lines, "local player = Players.LocalPlayer")
 		table.insert(lines, "local playerGui = player:WaitForChild('PlayerGui')")
@@ -357,6 +726,7 @@ local function generateLuaForGui(root, settings)
 
 	local nameCounts = {}
 	for _, inst in ipairs(instances) do
+		-- Hasilkan nama variabel unik
 		local baseName = generateSafeVarName(inst.Name)
 		local varName = baseName
 		if nameCounts[baseName] then
@@ -368,18 +738,17 @@ local function generateLuaForGui(root, settings)
 		varMap[inst] = varName
 		if inst == root then rootVarName = varName end
 
+		-- Buat instance
 		local line = string.format("%slocal %s = Instance.new(%s)", indent, varName, quoteString(inst.ClassName))
 		if settings.AddTraceComments then
 			line = line .. string.format(" -- Original: %s", getRelativePath(inst, root))
 		end
 		table.insert(lines, line)
-	end
-	table.insert(lines, "")
 
-	for _, inst in ipairs(instances) do
-		local varName = varMap[inst]
+		-- Atur properti
+		table.insert(lines, string.format("%s%s.Name = %s", indent, varName, quoteString(inst.Name)))
+
 		local propsToProcess, propSet = {}, {}
-
 		if inst:IsA("GuiObject") then
 			for _, prop in ipairs(COMMON_PROPERTIES) do if not propSet[prop] then table.insert(propsToProcess, prop); propSet[prop] = true end end
 		end
@@ -388,11 +757,9 @@ local function generateLuaForGui(root, settings)
 			for _, prop in ipairs(classSpecificProps) do if not propSet[prop] then table.insert(propsToProcess, prop); propSet[prop] = true end end
 		end
 
-		if inst:IsA("Instance") then table.insert(lines, string.format("%s%s.Name = %s", indent, varName, quoteString(inst.Name))) end
-
 		local propertyLines = {}
 		for _, prop in ipairs(propsToProcess) do
-			if prop ~= "Name" then
+			if prop ~= "Name" and not blacklist[prop] then
 				local ok, val = pcall(function() return inst[prop] end)
 				if ok and val ~= nil then
 					local defaultVal, _ = getClassDefaultValue(inst.ClassName, prop)
@@ -405,12 +772,12 @@ local function generateLuaForGui(root, settings)
 				end
 			end
 		end
-
 		table.sort(propertyLines)
 		for _, line in ipairs(propertyLines) do
 			table.insert(lines, line)
 		end
-
+		
+		-- Atur atribut
 		local attributes = inst:GetAttributes()
 		local attributeLines = {}
 		for name, value in pairs(attributes) do
@@ -434,21 +801,29 @@ local function generateLuaForGui(root, settings)
 			for _, attrLine in ipairs(attributeLines) do table.insert(lines, attrLine) end
 		end
 
-		table.insert(lines, "")
-	end
-
-	for _, inst in ipairs(instances) do
-		if inst ~= root then
-			local varName, parent = varMap[inst], inst.Parent
-			if varMap[parent] then
-				table.insert(lines, string.format("%s%s.Parent = %s", indent, varName, varMap[parent]))
+		-- Atur parent
+		if inst == root then
+			if isModule then
+				table.insert(lines, string.format("%s%s.Parent = parent", indent, varName))
+			else
+				table.insert(lines, string.format("%s%s.Parent = playerGui", indent, varName))
+			end
+		else
+			local parentVarName = varMap[inst.Parent]
+			if parentVarName then
+				table.insert(lines, string.format("%s%s.Parent = %s", indent, varName, parentVarName))
 			end
 		end
+		
+		table.insert(lines, "") -- Baris kosong antar instance
+	end
+	
+	-- Hapus baris kosong terakhir
+	if #lines > 0 and lines[#lines] == "" then
+		table.remove(lines)
 	end
 
 	if isModule then
-		table.insert(lines, string.format("%s%s.Parent = parent", indent, rootVarName))
-		table.insert(lines, "")
 		table.insert(lines, indent .. "local elements = {")
 		for inst, varName in pairs(varMap) do
 			if inst:IsA("GuiObject") or inst:IsA("UIConstraint") then
@@ -461,8 +836,6 @@ local function generateLuaForGui(root, settings)
 		table.insert(lines, "end")
 		table.insert(lines, "")
 		table.insert(lines, "return module")
-	else
-		table.insert(lines, string.format("%s.Parent = playerGui", rootVarName))
 	end
 
 	return table.concat(lines, "\n")
@@ -514,7 +887,7 @@ local function performConversion(settings)
 		return nil, "Gagal menghasilkan kode. Periksa Output untuk detail."
 	end
 
-	return generated, root.Name
+	return generated, root
 end
 
 local function createFile(generated, rootName, settings)
@@ -539,15 +912,53 @@ local function createFile(generated, rootName, settings)
 		local existing = targetFolder:FindFirstChild(scriptInstance.Name)
 		if existing and existing:IsA(scriptInstance.ClassName) then
 			existing.Source = generated
-			return string.format("%s '%s' berhasil diperbarui.", settings.ScriptType, existing.Name)
+			return string.format("%s '%s' berhasil diperbarui.", settings.ScriptType, existing.Name), existing
 		end
 	end
 
 	scriptInstance.Source = generated
 	scriptInstance.Parent = targetFolder
 
-	return string.format("%s '%s' berhasil dibuat.", settings.ScriptType, scriptInstance.Name)
+	return string.format("%s '%s' berhasil dibuat.", settings.ScriptType, scriptInstance.Name), scriptInstance
 end
+
+local function handleContextualConversion(selection)
+	-- Muat pengaturan dari penyimpanan, dengan nilai default
+	local settings = {
+		ScriptType = plugin:GetSetting("ScriptType") or "ModuleScript",
+		AddTraceComments = plugin:GetSetting("AddTraceComments") ~= false, -- Default to true
+		OverwriteExisting = plugin:GetSetting("OverwriteExisting") ~= false, -- Default to true
+		PropertyBlacklist = plugin:GetSetting("PropertyBlacklist") or "Position,Size",
+	}
+
+	-- Lakukan konversi
+	local root = selection[1]
+	if not root then
+		warn("[GUIConvert] No object selected for contextual conversion.")
+		return
+	end
+
+	if not (isGuiObject(root) or root:IsA("ScreenGui")) then
+		warn("[GUIConvert] Selected object is not a valid GUI for contextual conversion.")
+		return
+	end
+
+	-- Karena performConversion mengakses 'controls' secara global, kita tidak bisa memanggilnya secara langsung.
+	-- Kita panggil bagian intinya.
+	local success, generated = pcall(function() return generateLuaForGui(root, settings) end)
+	if not success then
+		warn("[GUIConvert] Gagal menghasilkan kode:", generated)
+		return
+	end
+
+	local resultName = root.Name
+	local successMsg = createFile(generated, resultName, settings)
+	print("[GUIConvert] " .. successMsg)
+end
+
+contextualAction.Triggered:Connect(handleContextualConversion)
+
+controls = createUI()
 
 -- Hubungkan Logika
 local function updateSelectionDisplay()
@@ -566,9 +977,6 @@ local function updateSelectionDisplay()
 		controls.SelectionLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
 	end
 end
-
-Selection.SelectionChanged:Connect(updateSelectionDisplay)
-updateSelectionDisplay() -- Panggil sekali untuk status awal
 
 button.Click:Connect(function()
 	configWidget.Enabled = not configWidget.Enabled
@@ -589,21 +997,41 @@ local function showStatus(message, isError)
 end
 
 controls.ConvertButton.MouseButton1Click:Connect(function()
+	local blacklistedProps = {}
+	for propName, checkboxData in pairs(controls.BlacklistCheckboxes) do
+		if checkboxData.IsBlacklisted() then
+			table.insert(blacklistedProps, propName)
+		end
+	end
+	local blacklistString = table.concat(blacklistedProps, ",")
+
 	local settings = {
 		ScriptType = controls.ScriptTypeButton.Text,
 		AddTraceComments = controls.IsCommentsEnabled(),
-		OverwriteExisting = controls.IsOverwriteEnabled()
+		OverwriteExisting = controls.IsOverwriteEnabled(),
+		PropertyBlacklist = blacklistString,
+		LiveSyncEnabled = controls.IsLiveSyncEnabled()
 	}
 
-	local generated, result = performConversion(settings)
+	local generated, rootObject = performConversion(settings)
 	if generated then
-		local successMsg = createFile(generated, result, settings)
-		showStatus("✓ " .. successMsg, false)
+		local successMsg, scriptInstance = createFile(generated, rootObject.Name, settings)
+		
 		plugin:SetSetting("ScriptType", settings.ScriptType)
 		plugin:SetSetting("AddTraceComments", settings.AddTraceComments)
 		plugin:SetSetting("OverwriteExisting", settings.OverwriteExisting)
+		plugin:SetSetting("PropertyBlacklist", settings.PropertyBlacklist)
+		plugin:SetSetting("LiveSyncEnabled", settings.LiveSyncEnabled)
+		
+		if settings.LiveSyncEnabled then
+			startSyncing(rootObject, scriptInstance, settings)
+		else
+			stopSyncing()
+			showStatus("✓ " .. successMsg, false)
+		end
 	else
-		showStatus("✗ " .. result, true)
+		showStatus("✗ " .. rootObject, true)
+		stopSyncing()
 	end
 end)
 
@@ -646,43 +1074,5 @@ end
 
 controls.ExampleCodeButton.MouseButton1Click:Connect(handleGetExampleCode)
 
-local function handleContextualConversion(selection)
-	-- Muat pengaturan dari penyimpanan, dengan nilai default
-	local settings = {
-		ScriptType = plugin:GetSetting("ScriptType") or "ModuleScript",
-		AddTraceComments = plugin:GetSetting("AddTraceComments") ~= false, -- Default to true
-		OverwriteExisting = plugin:GetSetting("OverwriteExisting") ~= false, -- Default to true
-	}
-	local blacklistText = plugin:GetSetting("PropertyBlacklist") or "Position,Size"
-
-	-- Buat objek controls tiruan untuk diteruskan ke generateLuaForGui
-	local fakeControls = {
-		BlacklistTextbox = { Text = blacklistText }
-	}
-
-	-- Lakukan konversi
-	local root = selection[1]
-	if not root then
-		warn("[GUIConvert] No object selected for contextual conversion.")
-		return
-	end
-
-	if not (isGuiObject(root) or root:IsA("ScreenGui")) then
-		warn("[GUIConvert] Selected object is not a valid GUI for contextual conversion.")
-		return
-	end
-
-	-- Karena performConversion mengakses 'controls' secara global, kita tidak bisa memanggilnya secara langsung.
-	-- Kita panggil bagian intinya.
-	local success, generated = pcall(function() return generateLuaForGui(root, settings, fakeControls) end)
-	if not success then
-		warn("[GUIConvert] Gagal menghasilkan kode:", generated)
-		return
-	end
-
-	local resultName = root.Name
-	local successMsg = createFile(generated, resultName, settings)
-	print("[GUIConvert] " .. successMsg)
-end
-
-contextualAction.Triggered:Connect(handleContextualConversion)
+Selection.SelectionChanged:Connect(updateSelectionDisplay)
+updateSelectionDisplay() -- Panggil sekali untuk status awal
