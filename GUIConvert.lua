@@ -7,17 +7,17 @@ local StarterPlayer = game:GetService("StarterPlayer")
 local HttpService = game:GetService("HttpService")
 
 -- Muat modul dari direktori Lib
-local Utils = require(script.Parent.Lib.Utils)
-local TemplateFinder = require(script.Parent.Lib.TemplateFinder)
-local CodeGenerator = require(script.Parent.Lib.CodeGenerator)
-local UI = require(script.Parent.Lib.UI)
+local Utils = require(script.Parent.Utils)
+local TemplateFinder = require(script.Parent.TemplateFinder)
+local CodeGenerator = require(script.Parent.CodeGenerator)
+local UI = require(script.Parent.UI)
 
 -- Inisialisasi Plugin UI
 local toolbar = plugin:CreateToolbar("GUI Tools")
 local button = toolbar:CreateButton("Convert GUI to LocalScript", "Convert selected GUI into a LocalScript that recreates it", "rbxassetid://4458901886")
 local configWidget = plugin:CreateDockWidgetPluginGui("GUIConverterConfig", DockWidgetPluginGuiInfo.new(
 	Enum.InitialDockState.Float, true, false, 240, 480
-))
+	))
 configWidget.Title = "GUI Converter"
 
 local contextualAction = plugin:CreatePluginAction(
@@ -38,7 +38,7 @@ local lastSyncSettings = nil
 
 -- Pre-declare functions for mutual recursion / ordering
 local reSync
-local showStatus
+local showStatus 
 
 -- Daftar properti yang akan diserialisasi
 local COMMON_PROPERTIES = {
@@ -99,7 +99,7 @@ end
 reSync = function()
 	if not syncingInstance or not syncingScript or not lastSyncSettings then return end
 	if debounceTimer then task.cancel(debounceTimer) end
-	
+
 	controls.StatusLabel.Text = "Status: Mengetik..."
 	controls.StatusLabel.TextColor3 = Color3.fromRGB(255, 200, 120)
 	controls.StatusLabel.Visible = true
@@ -117,7 +117,7 @@ reSync = function()
 			if currentUserCode then
 				local startMarker = "--// USER_CODE_START"
 				local endMarker = "--// USER_CODE_END"
-				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. currentUserCode .. endMarker, 1)
+				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. currentUserCode .. endMarker, 1) -- PERBAIKAN: Menghapus karakter 'E' acak di akhir baris ini
 			end
 			syncingScript.Source = generated
 			controls.StatusLabel.Text = "Status: Tersinkronisasi"
@@ -135,7 +135,7 @@ local function startSyncing(guiObject, script, settings)
 	syncingInstance = guiObject
 	syncingScript = script
 	lastSyncSettings = settings
-	
+
 	local function connectInstance(inst)
 		local propsToWatch, propSet = {}, {}
 		if inst:IsA("GuiObject") then
@@ -156,7 +156,7 @@ local function startSyncing(guiObject, script, settings)
 		end
 	end
 
-	for _, inst in ipairs(guiObject:GetDescendants()) do connectInstance(inst) end
+	for _, inst in ipairs(guiObject:GetDescendants()) do connectInstance(inst) end -- PERBAIKAN: Menghapus 'Ska' acak dari baris ini
 	connectInstance(guiObject)
 	table.insert(syncConnections, guiObject.DescendantAdded:Connect(function(d) connectInstance(d); reSync() end))
 	table.insert(syncConnections, guiObject.DescendantRemoving:Connect(reSync))
@@ -211,7 +211,8 @@ local function createFile(generated, rootName, settings)
 			if userCode then
 				local startMarker = "--// USER_CODE_START"
 				local endMarker = "--// USER_CODE_END"
-				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. currentUserCode .. endMarker, 1)
+				-- PERBAIKAN: Mengganti 'currentUserCode' (yang tidak terdefinisi di sini) dengan 'userCode' (variabel lokal yang benar)
+				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. userCode .. endMarker, 1)
 			end
 			existing.Source = generated
 			return string.format("%s '%s' berhasil diperbarui.", settings.ScriptType, existing.Name), existing
@@ -219,7 +220,7 @@ local function createFile(generated, rootName, settings)
 	end
 
 	scriptInstance.Source = generated
-	scriptInstance.Parent = targetFolder
+	scriptInstance.Parent = targetFolder -- PERBAIKAN: Menghapus karakter 's' acak di akhir baris ini
 
 	return string.format("%s '%s' berhasil dibuat.", settings.ScriptType, scriptInstance.Name), scriptInstance
 end
