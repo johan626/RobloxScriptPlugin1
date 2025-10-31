@@ -74,7 +74,7 @@ function CodeGenerator.generate(root, settings, commonProps, propsByClass, utils
 	local nameCounts = {}
 
 	local function generateInstanceCode(inst, currentIndent, parentVar, isTemplate)
-		local baseName = utils.generateSafeVarName(inst.Name)
+		local baseName = utils.generateSafeVarName(inst.Name, inst.ClassName)
 		local varName = baseName
 		if nameCounts[baseName] then
 			nameCounts[baseName] = nameCounts[baseName] + 1
