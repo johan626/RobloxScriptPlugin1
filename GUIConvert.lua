@@ -196,8 +196,15 @@ local function reSync()
 			return
 		end
 
+		local currentUserCode = extractUserCode(syncingScript.Source)
+
 		local success, generated = pcall(function() return generateLuaForGui(syncingInstance, lastSyncSettings) end)
 		if success then
+			if currentUserCode then
+				local startMarker = "--// USER_CODE_START"
+				local endMarker = "--// USER_CODE_END"
+				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. currentUserCode .. endMarker, 1)
+			end
 			syncingScript.Source = generated
 			controls.StatusLabel.Text = "Status: Tersinkronisasi"
 			controls.StatusLabel.TextColor3 = Color3.fromRGB(120, 255, 120)
@@ -832,10 +839,17 @@ local function generateLuaForGui(root, settings)
 		end
 		table.insert(lines, indent .. "}")
 		table.insert(lines, "")
+		table.insert(lines, indent .. "--// USER_CODE_START -- Letakkan kode kustom di bawah baris ini")
+		table.insert(lines, indent .. "--// USER_CODE_END -- Letakkan kode kustom di atas baris ini")
+		table.insert(lines, "")
 		table.insert(lines, string.format("%sreturn elements", indent))
 		table.insert(lines, "end")
 		table.insert(lines, "")
 		table.insert(lines, "return module")
+	else
+		table.insert(lines, "")
+		table.insert(lines, "--// USER_CODE_START -- Letakkan kode kustom di bawah baris ini")
+		table.insert(lines, "--// USER_CODE_END -- Letakkan kode kustom di atas baris ini")
 	end
 
 	return table.concat(lines, "\n")
@@ -869,6 +883,20 @@ function generateExampleCode(moduleScript)
 	}
 
 	return table.concat(lines, "\n")
+end
+
+local function extractUserCode(source)
+	local startMarker = "--// USER_CODE_START"
+	local endMarker = "--// USER_CODE_END"
+	local startIndex, _ = source:find(startMarker, 1, true)
+	local _, endIndex = source:find(endMarker, 1, true)
+
+	if startIndex and endIndex then
+		local start = startIndex + #startMarker
+		local extracted = source:sub(start, endIndex - 1)
+		return extracted
+	end
+	return nil
 end
 
 local function performConversion(settings)
@@ -911,6 +939,12 @@ local function createFile(generated, rootName, settings)
 	if settings.OverwriteExisting then
 		local existing = targetFolder:FindFirstChild(scriptInstance.Name)
 		if existing and existing:IsA(scriptInstance.ClassName) then
+			local userCode = extractUserCode(existing.Source)
+			if userCode then
+				local startMarker = "--// USER_CODE_START"
+				local endMarker = "--// USER_CODE_END"
+				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. userCode .. endMarker, 1)
+			end
 			existing.Source = generated
 			return string.format("%s '%s' berhasil diperbarui.", settings.ScriptType, existing.Name), existing
 		end
