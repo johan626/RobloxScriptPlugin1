@@ -74,7 +74,7 @@ function CodeGenerator.generate(root, settings, commonProps, propsByClass, utils
 	local nameCounts = {}
 
 	local function generateInstanceCode(inst, currentIndent, parentVar, isTemplate)
-		local baseName = utils.generateSafeVarName(inst.Name)
+		local baseName = utils.generateSafeVarName(inst)
 		local varName = baseName
 		if nameCounts[baseName] then
 			nameCounts[baseName] = nameCounts[baseName] + 1
@@ -193,7 +193,7 @@ function CodeGenerator.generate(root, settings, commonProps, propsByClass, utils
 			local templateData = allTemplates[inst]
 			local templateVarName = generateInstanceCode(inst, indent, nil, true)
 
-			local variationsVarName = utils.generateSafeVarName(inst.Name) .. "Variations"
+			local variationsVarName = utils.generateSafeVarName(inst) .. "Variations"
 			table.insert(lines, string.format("\n%slocal %s = {", indent, variationsVarName))
 			local allTemplateInstances = {inst}; for _, c in ipairs(templateData.Clones) do table.insert(allTemplateInstances, c) end
 

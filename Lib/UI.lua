@@ -4,16 +4,30 @@
 local UI = {}
 
 function UI.create(configWidget, plugin, settings)
+	local scrollingFrame = Instance.new("ScrollingFrame")
+	scrollingFrame.Size = UDim2.new(1, 0, 1, 0)
+	scrollingFrame.BackgroundColor3 = Color3.fromRGB(41, 42, 45)
+	scrollingFrame.BorderSizePixel = 0
+	scrollingFrame.ScrollBarThickness = 6
+	scrollingFrame.Parent = configWidget
+
 	local mainFrame = Instance.new("Frame")
 	mainFrame.Size = UDim2.new(1, 0, 1, 0)
-	mainFrame.BackgroundColor3 = Color3.fromRGB(41, 42, 45)
-	mainFrame.BorderSizePixel = 0
-	mainFrame.Parent = configWidget
+	mainFrame.BackgroundTransparency = 1
+	mainFrame.Parent = scrollingFrame
 
 	local listLayout = Instance.new("UIListLayout")
 	listLayout.Padding = UDim.new(0, 8)
 	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	listLayout.Parent = mainFrame
+
+	mainFrame.Size = UDim2.fromOffset(0, listLayout.AbsoluteContentSize.Y)
+	scrollingFrame.CanvasSize = UDim2.fromOffset(0, listLayout.AbsoluteContentSize.Y)
+
+	listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		mainFrame.Size = UDim2.fromOffset(0, listLayout.AbsoluteContentSize.Y)
+		scrollingFrame.CanvasSize = UDim2.fromOffset(0, listLayout.AbsoluteContentSize.Y)
+	end)
 
 	local padding = Instance.new("UIPadding")
 	padding.PaddingTop = UDim.new(0, 10)
@@ -201,22 +215,6 @@ function UI.create(configWidget, plugin, settings)
 	blacklistLabel.BackgroundTransparency = 1
 	blacklistLabel.Parent = mainFrame
 
-	local searchBox = Instance.new("TextBox")
-	searchBox.Name = "SearchBox"
-	searchBox.LayoutOrder = 10
-	searchBox.Size = UDim2.new(1, 0, 0, 24)
-	searchBox.Font = Enum.Font.SourceSans
-	searchBox.TextSize = 14
-	searchBox.PlaceholderText = "Cari properti..."
-	searchBox.TextColor3 = Color3.fromRGB(220, 220, 220)
-	searchBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-	searchBox.BorderColor3 = Color3.fromRGB(50, 50, 50)
-	searchBox.ClearTextOnFocus = false
-	searchBox.Parent = mainFrame
-	local searchCorner = Instance.new("UICorner")
-	searchCorner.CornerRadius = UDim.new(0, 4)
-	searchCorner.Parent = searchBox
-
 	local bulkActionFrame = Instance.new("Frame")
 	bulkActionFrame.LayoutOrder = 11
 	bulkActionFrame.Size = UDim2.new(1, 0, 0, 22)
@@ -259,7 +257,7 @@ function UI.create(configWidget, plugin, settings)
 
 	local blacklistFrame = Instance.new("ScrollingFrame")
 	blacklistFrame.LayoutOrder = 12
-	blacklistFrame.Size = UDim2.new(1, 0, 1, -355) -- Adjusted size for search box and buttons
+	blacklistFrame.Size = UDim2.new(1, 0, 0, 300) -- Ukuran tetap, ScrollingFrame utama akan menanganinya
 	blacklistFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	blacklistFrame.BorderSizePixel = 1
 	blacklistFrame.BorderColor3 = Color3.fromRGB(50, 50, 50)
@@ -444,7 +442,6 @@ function UI.create(configWidget, plugin, settings)
 		ConvertButton = convertButton,
 		ExampleCodeButton = exampleCodeButton,
 		StatusLabel = statusLabel,
-		SearchBox = searchBox,
 		SelectAllButton = selectAllButton,
 		DeselectAllButton = deselectAllButton,
 		IgnoreButton = ignoreButton,

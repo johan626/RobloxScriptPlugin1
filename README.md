@@ -23,10 +23,8 @@ GUIConvert adalah sebuah plugin canggih untuk Roblox Studio yang dirancang untuk
   - **Desain Kohesif:** Semua elemen interaktif berbagi bahasa desain yang konsisten.
   - **Daftar Hitam Otomatis Cerdas:** Saat Anda memilih `UIListLayout` atau `UIGridLayout`, plugin secara otomatis memasukkan properti `Position` dan `Size` ke dalam daftar hitam untuk Anda.
     - **Interaktivitas Tinggi:** Baris properti memberikan umpan balik visual dengan menjadi lebih terang saat kursor diarahkan ke atasnya, membuat UI terasa lebih responsif.
-    - **Pencarian Cepat:** Filter daftar properti secara dinamis menggunakan bar pencarian.
     - **Seleksi Massal yang Jelas:** Tombol "Hapus Semua" dan "Tambah Semua" memungkinkan pengelolaan cepat properti yang terlihat dengan teks yang lebih jelas.
     - **Manajemen Mudah:** Pilih properti mana yang ingin Anda abaikan selama proses konversi.
-  - **Tombol Toggle Berkode Warna:** Pengaturan seperti *Live Sync*, *Overwrite Existing*, dan *Trace Comments* memiliki tombol yang jelas untuk status 'On' (Hijau) dan 'Off' (Merah).
 - **Deteksi Template Cerdas:**
   - **Kode Efisien:** Secara otomatis mendeteksi grup elemen yang berulang di dalam `UIListLayout` atau `UIGridLayout`.
   - **Output Ringkas:** Alih-alih menghasilkan kode yang repetitif, plugin akan membuat satu "template", tabel `variations` untuk properti yang berbeda, dan sebuah `for loop` untuk meng-kloning template tersebut. Ini secara drastis mengurangi ukuran skrip dan meningkatkan keterbacaan.
@@ -35,7 +33,7 @@ GUIConvert adalah sebuah plugin canggih untuk Roblox Studio yang dirancang untuk
   - **Keterbacaan Tinggi:** Membuatnya sangat mudah untuk memahami struktur UI langsung dari skrip.
 - **Pelestarian Kode Kustom:** Timpa skrip yang ada tanpa kehilangan kode kustom Anda. Logika yang Anda tulis di antara penanda `--// USER_CODE_START` dan `--// USER_CODE_END` akan tetap utuh.
 - **Kode yang Sangat Dioptimalkan & Mudah Dibaca:**
-  - **Serialisasi Modern:** Menggunakan `Color3.fromHex()` untuk representasi warna yang ringkas.
+  - **Serialisasi Standar:** Menggunakan `Color3.fromRGB()` untuk representasi warna yang jelas dan `UDim2.new()` untuk properti posisi/ukuran.
   - **Pengelompokan Properti Logis:** Properti secara otomatis dikelompokkan berdasarkan fungsi (misalnya, `Layout`, `Visual`, `Text`), membuatnya lebih mudah untuk dibaca dan dipahami.
   - **Minimalis:** Plugin secara otomatis mengabaikan properti yang memiliki nilai default, menghasilkan output yang paling bersih.
 - **Fitur Tambahan:**
