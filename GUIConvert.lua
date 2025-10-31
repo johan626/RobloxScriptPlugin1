@@ -7,10 +7,10 @@ local StarterPlayer = game:GetService("StarterPlayer")
 local HttpService = game:GetService("HttpService")
 
 -- Muat modul dari direktori Lib
-local Utils = require(script.Parent.Utils)
-local TemplateFinder = require(script.Parent.TemplateFinder)
-local CodeGenerator = require(script.Parent.CodeGenerator)
-local UI = require(script.Parent.UI)
+local Utils = require(script.Lib.Utils)
+local TemplateFinder = require(script.Lib.TemplateFinder)
+local CodeGenerator = require(script.Lib.CodeGenerator)
+local UI = require(script.Lib.UI)
 
 -- Inisialisasi Plugin UI
 local toolbar = plugin:CreateToolbar("GUI Tools")
@@ -117,7 +117,7 @@ reSync = function()
 			if currentUserCode then
 				local startMarker = "--// USER_CODE_START"
 				local endMarker = "--// USER_CODE_END"
-				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. currentUserCode .. endMarker, 1) -- PERBAIKAN: Menghapus karakter 'E' acak di akhir baris ini
+				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. currentUserCode .. endMarker, 1)
 			end
 			syncingScript.Source = generated
 			controls.StatusLabel.Text = "Status: Tersinkronisasi"
@@ -156,7 +156,7 @@ local function startSyncing(guiObject, script, settings)
 		end
 	end
 
-	for _, inst in ipairs(guiObject:GetDescendants()) do connectInstance(inst) end -- PERBAIKAN: Menghapus 'Ska' acak dari baris ini
+	for _, inst in ipairs(guiObject:GetDescendants()) do connectInstance(inst) end
 	connectInstance(guiObject)
 	table.insert(syncConnections, guiObject.DescendantAdded:Connect(function(d) connectInstance(d); reSync() end))
 	table.insert(syncConnections, guiObject.DescendantRemoving:Connect(reSync))
@@ -211,7 +211,6 @@ local function createFile(generated, rootName, settings)
 			if userCode then
 				local startMarker = "--// USER_CODE_START"
 				local endMarker = "--// USER_CODE_END"
-				-- PERBAIKAN: Mengganti 'currentUserCode' (yang tidak terdefinisi di sini) dengan 'userCode' (variabel lokal yang benar)
 				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. userCode .. endMarker, 1)
 			end
 			existing.Source = generated
@@ -220,7 +219,7 @@ local function createFile(generated, rootName, settings)
 	end
 
 	scriptInstance.Source = generated
-	scriptInstance.Parent = targetFolder -- PERBAIKAN: Menghapus karakter 's' acak di akhir baris ini
+	scriptInstance.Parent = targetFolder
 
 	return string.format("%s '%s' berhasil dibuat.", settings.ScriptType, scriptInstance.Name), scriptInstance
 end
@@ -335,7 +334,12 @@ controls.ExampleCodeButton.MouseButton1Click:Connect(function()
 	showStatus("✓ Contoh skrip penggunaan dibuat!", false)
 end)
 
-Selection.SelectionChanged:Connect(function()
+-- ----------------------------------------------------------------
+-- PERBAIKAN DIMULAI DI SINI
+-- ----------------------------------------------------------------
+
+-- Buat fungsi khusus untuk menangani pembaruan UI pemilihan
+local function updateSelectionUI()
 	local sel = Selection:Get()
 	local obj = sel and sel[1]
 	if obj and (Utils.isGuiObject(obj) or obj:IsA("ScreenGui")) then
@@ -360,7 +364,10 @@ Selection.SelectionChanged:Connect(function()
 			controls.SelectionLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
 		end
 	end
-end)
+end
+
+-- Hubungkan sinyal ke fungsi baru
+Selection.SelectionChanged:Connect(updateSelectionUI)
 
 controls.IgnoreButton.MouseButton1Click:Connect(function()
 	local sel = Selection:Get()
@@ -368,10 +375,14 @@ controls.IgnoreButton.MouseButton1Click:Connect(function()
 	if obj and (Utils.isGuiObject(obj) or obj:IsA("ScreenGui")) then
 		local isIgnored = obj:GetAttribute("ConvertIgnore") == true
 		obj:SetAttribute("ConvertIgnore", not isIgnored)
-		Selection.SelectionChanged:Fire()
+
+		-- PERBAIKAN: Panggil fungsi secara langsung, bukan :Fire()
+		updateSelectionUI()
+
 		if syncingInstance then reSync() end
 	end
 end)
 
 -- Inisialisasi status UI awal
-Selection.SelectionChanged:Fire()
+-- PERBAIKAN: Panggil fungsi secara langsung, bukan :Fire()
+updateSelectionUI()
