@@ -25,10 +25,7 @@ function Utils.serializeValue(v)
 	elseif t == "Vector3" then
 		return string.format("Vector3.new(%s, %s, %s)", tostring(roundDecimal(v.X)), tostring(roundDecimal(v.Y)), tostring(roundDecimal(v.Z)))
 	elseif t == "Color3" then
-		local r = math.floor(v.R * 255 + 0.5)
-		local g = math.floor(v.G * 255 + 0.5)
-		local b = math.floor(v.B * 255 + 0.5)
-		return string.format("Color3.fromRGB(%d, %d, %d)", r, g, b)
+		return string.format("Color3.fromHex(%q)", v:ToHex())
 	elseif t == "ColorSequence" then
 		local keypoints = {}
 		for _, keypoint in ipairs(v.Keypoints) do
@@ -54,15 +51,7 @@ function Utils.serializeValue(v)
 	end
 end
 
-function Utils.generateSafeVarName(input)
-	local s
-	if typeof(input) == "Instance" then
-		s = input.Name
-		if not s or s == "" then s = input.ClassName end
-	else
-		s = tostring(input)
-	end
-
+function Utils.generateSafeVarName(s)
 	if not s or s == "" then return "obj" end
 	local name = tostring(s):gsub("%%s+(%%w)", function(c) return c:upper() end):gsub("[^%%w_]", "")
 	if name:match("^[0-9]") then name = "v" .. name end
@@ -131,7 +120,7 @@ function Utils.generateExampleCode(moduleScript)
 	local path = moduleScript:GetFullName()
 	path = path:gsub("^.*StarterPlayerScripts%.", "") 
 	local moduleName = moduleScript.Name
-	local varName = Utils.generateSafeVarName(moduleScript)
+	local varName = Utils.generateSafeVarName(moduleName)
 	local lines = {
 		string.format("-- Contoh penggunaan untuk '%s'", moduleName),
 		"",
