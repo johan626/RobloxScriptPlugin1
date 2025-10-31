@@ -4,30 +4,16 @@
 local UI = {}
 
 function UI.create(configWidget, plugin, settings)
-	local scrollingFrame = Instance.new("ScrollingFrame")
-	scrollingFrame.Size = UDim2.new(1, 0, 1, 0)
-	scrollingFrame.BackgroundColor3 = Color3.fromRGB(41, 42, 45)
-	scrollingFrame.BorderSizePixel = 0
-	scrollingFrame.ScrollBarThickness = 6
-	scrollingFrame.Parent = configWidget
-
 	local mainFrame = Instance.new("Frame")
 	mainFrame.Size = UDim2.new(1, 0, 1, 0)
-	mainFrame.BackgroundTransparency = 1
-	mainFrame.Parent = scrollingFrame
+	mainFrame.BackgroundColor3 = Color3.fromRGB(41, 42, 45)
+	mainFrame.BorderSizePixel = 0
+	mainFrame.Parent = configWidget
 
 	local listLayout = Instance.new("UIListLayout")
 	listLayout.Padding = UDim.new(0, 8)
 	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	listLayout.Parent = mainFrame
-
-	mainFrame.Size = UDim2.fromOffset(0, listLayout.AbsoluteContentSize.Y)
-	scrollingFrame.CanvasSize = UDim2.fromOffset(0, listLayout.AbsoluteContentSize.Y)
-
-	listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-		mainFrame.Size = UDim2.fromOffset(0, listLayout.AbsoluteContentSize.Y)
-		scrollingFrame.CanvasSize = UDim2.fromOffset(0, listLayout.AbsoluteContentSize.Y)
-	end)
 
 	local padding = Instance.new("UIPadding")
 	padding.PaddingTop = UDim.new(0, 10)
@@ -69,7 +55,6 @@ function UI.create(configWidget, plugin, settings)
 	ignoreButton.TextXAlignment = Enum.TextXAlignment.Left
 	ignoreButton.Visible = false -- Hanya terlihat jika ada objek yang valid dipilih
 	ignoreButton.Parent = mainFrame
-	ignoreButton.Tooltip = "Jika dicentang, objek ini dan semua turunannya akan diabaikan selama proses konversi."
 	local ignoreCorner = Instance.new("UICorner")
 	ignoreCorner.CornerRadius = UDim.new(0, 4)
 	ignoreCorner.Parent = ignoreButton
@@ -98,7 +83,6 @@ function UI.create(configWidget, plugin, settings)
 	scriptTypeButton.Font = Enum.Font.SourceSans
 	scriptTypeButton.TextSize = 14
 	scriptTypeButton.Parent = mainFrame
-	scriptTypeButton.Tooltip = "ModuleScript menghasilkan kode yang dapat digunakan kembali. LocalScript akan berjalan secara otomatis untuk pemain."
 	local typeCorner = Instance.new("UICorner")
 	typeCorner.CornerRadius = UDim.new(0, 4)
 	typeCorner.Parent = scriptTypeButton
@@ -117,7 +101,7 @@ function UI.create(configWidget, plugin, settings)
 	updateScriptTypeButton()
 
 	-- Fungsi pembantu baru untuk sakelar geser modern
-	local function createToggleSwitch(layoutOrder, text, tooltip, settingKey, defaultValue, callback)
+	local function createToggleSwitch(layoutOrder, text, settingKey, defaultValue, callback)
 		local savedValue = plugin:GetSetting(settingKey)
 		local isEnabled = (savedValue == nil) and defaultValue or savedValue
 
@@ -126,7 +110,6 @@ function UI.create(configWidget, plugin, settings)
 		container.Size = UDim2.new(1, 0, 0, 28)
 		container.BackgroundTransparency = 1
 		container.Parent = mainFrame
-		container.Tooltip = tooltip
 
 		local label = Instance.new("TextLabel")
 		label.Size = UDim2.new(1, -50, 1, 0)
@@ -215,6 +198,22 @@ function UI.create(configWidget, plugin, settings)
 	blacklistLabel.BackgroundTransparency = 1
 	blacklistLabel.Parent = mainFrame
 
+	local searchBox = Instance.new("TextBox")
+	searchBox.Name = "SearchBox"
+	searchBox.LayoutOrder = 10
+	searchBox.Size = UDim2.new(1, 0, 0, 24)
+	searchBox.Font = Enum.Font.SourceSans
+	searchBox.TextSize = 14
+	searchBox.PlaceholderText = "Cari properti..."
+	searchBox.TextColor3 = Color3.fromRGB(220, 220, 220)
+	searchBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	searchBox.BorderColor3 = Color3.fromRGB(50, 50, 50)
+	searchBox.ClearTextOnFocus = false
+	searchBox.Parent = mainFrame
+	local searchCorner = Instance.new("UICorner")
+	searchCorner.CornerRadius = UDim.new(0, 4)
+	searchCorner.Parent = searchBox
+
 	local bulkActionFrame = Instance.new("Frame")
 	bulkActionFrame.LayoutOrder = 11
 	bulkActionFrame.Size = UDim2.new(1, 0, 0, 22)
@@ -236,7 +235,6 @@ function UI.create(configWidget, plugin, settings)
 	selectAllButton.TextColor3 = Color3.fromRGB(200, 220, 255)
 	selectAllButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
 	selectAllButton.Parent = bulkActionFrame
-	selectAllButton.Tooltip = "Menghapus semua properti yang terlihat dari daftar hitam (membatalkan centang)."
 	local selectAllCorner = Instance.new("UICorner")
 	selectAllCorner.CornerRadius = UDim.new(0, 4)
 	selectAllCorner.Parent = selectAllButton
@@ -250,14 +248,13 @@ function UI.create(configWidget, plugin, settings)
 	deselectAllButton.TextColor3 = Color3.fromRGB(255, 200, 200)
 	deselectAllButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
 	deselectAllButton.Parent = bulkActionFrame
-	deselectAllButton.Tooltip = "Menambahkan semua properti yang terlihat ke daftar hitam (mencentang)."
 	local deselectAllCorner = Instance.new("UICorner")
 	deselectAllCorner.CornerRadius = UDim.new(0, 4)
 	deselectAllCorner.Parent = deselectAllButton
 
 	local blacklistFrame = Instance.new("ScrollingFrame")
 	blacklistFrame.LayoutOrder = 12
-	blacklistFrame.Size = UDim2.new(1, 0, 0, 300) -- Ukuran tetap, ScrollingFrame utama akan menanganinya
+	blacklistFrame.Size = UDim2.new(1, 0, 1, -355) -- Adjusted size for search box and buttons
 	blacklistFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	blacklistFrame.BorderSizePixel = 1
 	blacklistFrame.BorderColor3 = Color3.fromRGB(50, 50, 50)
@@ -378,7 +375,6 @@ function UI.create(configWidget, plugin, settings)
 	convertButton.Font = Enum.Font.SourceSansBold
 	convertButton.TextSize = 16
 	convertButton.Parent = mainFrame
-	convertButton.Tooltip = "Mengonversi objek GUI yang dipilih menjadi skrip Luau menggunakan pengaturan saat ini."
 	local convertCorner = Instance.new("UICorner")
 	convertCorner.CornerRadius = UDim.new(0, 4)
 	convertCorner.Parent = convertButton
@@ -405,7 +401,6 @@ function UI.create(configWidget, plugin, settings)
 	exampleCodeButton.Font = Enum.Font.SourceSans
 	exampleCodeButton.TextSize = 14
 	exampleCodeButton.Parent = mainFrame
-	exampleCodeButton.Tooltip = "Membuat skrip contoh yang menunjukkan cara memuat dan menggunakan ModuleScript yang dihasilkan."
 	local exampleCorner = Instance.new("UICorner")
 	exampleCorner.CornerRadius = UDim.new(0, 4)
 	exampleCorner.Parent = exampleCodeButton
@@ -442,6 +437,7 @@ function UI.create(configWidget, plugin, settings)
 		ConvertButton = convertButton,
 		ExampleCodeButton = exampleCodeButton,
 		StatusLabel = statusLabel,
+		SearchBox = searchBox,
 		SelectAllButton = selectAllButton,
 		DeselectAllButton = deselectAllButton,
 		IgnoreButton = ignoreButton,
