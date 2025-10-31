@@ -25,7 +25,7 @@ function Utils.serializeValue(v)
 	elseif t == "Vector3" then
 		return string.format("Vector3.new(%s, %s, %s)", tostring(roundDecimal(v.X)), tostring(roundDecimal(v.Y)), tostring(roundDecimal(v.Z)))
 	elseif t == "Color3" then
-		return string.format("Color3.fromHex(%q)", v:ToHex())
+		return string.format("Color3.fromRGB(%d, %d, %d)", math.floor(v.R * 255), math.floor(v.G * 255), math.floor(v.B * 255))
 	elseif t == "ColorSequence" then
 		local keypoints = {}
 		for _, keypoint in ipairs(v.Keypoints) do
@@ -51,12 +51,20 @@ function Utils.serializeValue(v)
 	end
 end
 
-function Utils.generateSafeVarName(s)
-	if not s or s == "" then return "obj" end
+function Utils.generateSafeVarName(s, className)
 	local name = tostring(s):gsub("%%s+(%%w)", function(c) return c:upper() end):gsub("[^%%w_]", "")
 	if name:match("^[0-9]") then name = "v" .. name end
-	if #name > 0 then name = name:sub(1,1):lower() .. name:sub(2) end
-	if name == "" then return "unnamedGui" end
+
+	if #name > 0 then
+		name = name:sub(1,1):lower() .. name:sub(2)
+	elseif className and #className > 0 then
+		name = className:sub(1,1):lower() .. className:sub(2)
+	end
+
+	if name == "" then
+		return "obj"
+	end
+
 	return name
 end
 
