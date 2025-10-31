@@ -204,7 +204,7 @@ function UI.create(configWidget, plugin, settings)
 	local bulkListLayout = Instance.new("UIListLayout")
 	bulkListLayout.FillDirection = Enum.FillDirection.Horizontal
 	bulkListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
-	bulkListLayout.Spacing = UDim.new(0, 8)
+	bulkListLayout.Padding = UDim.new(0, 8)
 	bulkListLayout.Parent = bulkActionFrame
 
 	local selectAllButton = Instance.new("TextButton")
@@ -288,7 +288,7 @@ function UI.create(configWidget, plugin, settings)
 		label.TextSize = 14
 		label.TextColor3 = Color3.fromRGB(220, 220, 220)
 		label.TextXAlignment = Enum.TextXAlignment.Left
-		label.Padding = UDim.new(0, 5)
+		label.LineHeight = 0.8
 		label.BackgroundTransparency = 1
 		label.Parent = row
 
