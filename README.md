@@ -12,12 +12,20 @@ GUIConvert adalah sebuah plugin canggih untuk Roblox Studio yang dirancang untuk
 - **Dua Pilihan Tipe Skrip:**
   - **`ModuleScript`**: Hasilkan modul yang dapat digunakan kembali yang mengembalikan sebuah fungsi `create()` untuk membangun UI. Ideal untuk diintegrasikan ke dalam kerangka kerja (framework) UI Anda.
   - **`LocalScript`**: Hasilkan skrip yang akan secara otomatis membuat UI di bawah `PlayerGui` saat permainan dimulai.
-- **Sinkronisasi Langsung (`Live Sync`):** Secara otomatis memperbarui skrip yang terhubung setiap kali Anda membuat perubahan pada GUI sumber di Explorer. Fitur ini sangat mempercepat proses iterasi desain.
-- **UI yang Intuitif:** Atur semua opsi konversi melalui jendela plugin yang mudah digunakan.
-  - **Daftar Hitam Properti (`Property Blacklist`):**
+- **Sinkronisasi Langsung (`Live Sync`) Berkinerja Tinggi:**
+  - **Sangat Dioptimalkan:** Sistem `Live Sync` telah direkayasa ulang untuk kinerja maksimum, bahkan pada hierarki GUI dengan ribuan elemen.
+  - **Manajemen Sumber Daya Cerdas:** Koneksi peristiwa dikelola secara dinamis untuk mencegah `memory leak` dan memastikan dampak minimal pada performa Studio.
+  - **Umpan Balik Informatif:** UI memberikan stempel waktu yang jelas untuk sinkronisasi terakhir, sehingga Anda selalu tahu statusnya.
+- **UI Modern & Profesional:** Antarmuka plugin telah didesain ulang sepenuhnya untuk estetika modern dan pengalaman pengguna yang lebih baik.
+  - **Bantuan Kontekstual:** Arahkan kursor ke pengaturan atau tombol apa pun untuk mendapatkan *tooltip* informatif yang menjelaskan fungsinya.
+  - **Sakelar Geser Kustom:** Opsi pengaturan sekarang menggunakan sakelar geser (toggle switches) yang jelas dan animasi.
+  - **Hierarki Visual yang Jelas:** Tombol aksi utama didesain untuk menonjol, memandu pengguna melalui alur kerja.
+  - **Desain Kohesif:** Semua elemen interaktif berbagi bahasa desain yang konsisten.
+  - **Daftar Hitam Otomatis Cerdas:** Saat Anda memilih `UIListLayout` atau `UIGridLayout`, plugin secara otomatis memasukkan properti `Position` dan `Size` ke dalam daftar hitam untuk Anda.
+    - **Interaktivitas Tinggi:** Baris properti memberikan umpan balik visual dengan menjadi lebih terang saat kursor diarahkan ke atasnya, membuat UI terasa lebih responsif.
     - **Pencarian Cepat:** Filter daftar properti secara dinamis menggunakan bar pencarian.
-    - **Seleksi Massal:** Gunakan tombol "Pilih Semua" dan "Batal Pilih Semua" untuk mengelola properti yang terlihat dengan cepat.
-    - **Manajemen Mudah:** Pilih properti mana yang ingin Anda abaikan selama proses konversi, sangat berguna saat menggunakan `UILayout` di mana `Position` dan `Size` diatur secara otomatis.
+    - **Seleksi Massal yang Jelas:** Tombol "Hapus Semua" dan "Tambah Semua" memungkinkan pengelolaan cepat properti yang terlihat dengan teks yang lebih jelas.
+    - **Manajemen Mudah:** Pilih properti mana yang ingin Anda abaikan selama proses konversi.
   - **Tombol Toggle Berkode Warna:** Pengaturan seperti *Live Sync*, *Overwrite Existing*, dan *Trace Comments* memiliki tombol yang jelas untuk status 'On' (Hijau) dan 'Off' (Merah).
 - **Deteksi Template Cerdas:**
   - **Kode Efisien:** Secara otomatis mendeteksi grup elemen yang berulang di dalam `UIListLayout` atau `UIGridLayout`.
@@ -26,7 +34,10 @@ GUIConvert adalah sebuah plugin canggih untuk Roblox Studio yang dirancang untuk
   - **Struktur Visual:** Kode yang dihasilkan memiliki indentasi yang secara visual mencerminkan hierarki induk-anak dari GUI asli di Explorer.
   - **Keterbacaan Tinggi:** Membuatnya sangat mudah untuk memahami struktur UI langsung dari skrip.
 - **Pelestarian Kode Kustom:** Timpa skrip yang ada tanpa kehilangan kode kustom Anda. Logika yang Anda tulis di antara penanda `--// USER_CODE_START` dan `--// USER_CODE_END` akan tetap utuh.
-- **Kode yang Dioptimalkan:** Plugin secara otomatis mengabaikan properti yang memiliki nilai default, menghasilkan output yang lebih bersih dan efisien.
+- **Kode yang Sangat Dioptimalkan & Mudah Dibaca:**
+  - **Serialisasi Modern:** Menggunakan `Color3.fromHex()` untuk representasi warna yang ringkas.
+  - **Pengelompokan Properti Logis:** Properti secara otomatis dikelompokkan berdasarkan fungsi (misalnya, `Layout`, `Visual`, `Text`), membuatnya lebih mudah untuk dibaca dan dipahami.
+  - **Minimalis:** Plugin secara otomatis mengabaikan properti yang memiliki nilai default, menghasilkan output yang paling bersih.
 - **Fitur Tambahan:**
   - **Abaikan Objek dengan Mudah:** Abaikan `GuiObject` apa pun (dan semua turunannya) dari konversi dengan memilihnya di Explorer dan mencentang kotak "Abaikan Objek & Turunannya" di UI plugin.
   - **Pembuat Kode Contoh:** Secara otomatis menghasilkan skrip contoh untuk menunjukkan cara memuat dan menggunakan `ModuleScript` yang Anda buat.

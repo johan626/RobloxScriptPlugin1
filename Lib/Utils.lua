@@ -25,10 +25,7 @@ function Utils.serializeValue(v)
 	elseif t == "Vector3" then
 		return string.format("Vector3.new(%s, %s, %s)", tostring(roundDecimal(v.X)), tostring(roundDecimal(v.Y)), tostring(roundDecimal(v.Z)))
 	elseif t == "Color3" then
-		local r = math.floor(v.R * 255 + 0.5)
-		local g = math.floor(v.G * 255 + 0.5)
-		local b = math.floor(v.B * 255 + 0.5)
-		return string.format("Color3.fromRGB(%d, %d, %d)", r, g, b)
+		return string.format("Color3.fromHex(%q)", v:ToHex())
 	elseif t == "ColorSequence" then
 		local keypoints = {}
 		for _, keypoint in ipairs(v.Keypoints) do
@@ -104,6 +101,19 @@ end
 
 function Utils.isGuiObject(inst)
 	return inst and inst:IsA("GuiObject")
+end
+
+function Utils.collectGuiInstances(root)
+	local instances = {}
+	if Utils.isGuiObject(root) or root:IsA("ScreenGui") or root:IsA("UIBase") then
+		table.insert(instances, root)
+	end
+	for _, child in ipairs(root:GetDescendants()) do
+		if (Utils.isGuiObject(child) or child:IsA("UIBase")) and child:GetAttribute("ConvertIgnore") ~= true then
+			table.insert(instances, child)
+		end
+	end
+	return instances
 end
 
 function Utils.generateExampleCode(moduleScript)

@@ -106,7 +106,22 @@ function CodeGenerator.generate(root, settings, commonProps, propsByClass, utils
 		local varyingPropsSet = {}
 		for _, p in ipairs(varyingPropsForTemplate) do varyingPropsSet[p] = true end
 
-		local propertyLines = {}
+		-- Kelompokkan properti untuk keterbacaan yang lebih baik
+		local layoutProps = {}
+		local visualProps = {}
+		local textProps = {}
+		local otherProps = {}
+
+		local propGroups = {
+			Layout = {"AnchorPoint", "Position", "Size", "AutomaticSize", "Rotation", "ZIndex", "LayoutOrder"},
+			Visual = {"BackgroundColor3", "BackgroundTransparency", "BorderSizePixel", "Image", "ImageTransparency", "ImageColor3", "ScaleType", "SliceCenter", "SliceScale", "ImageRectOffset", "ImageRectSize", "ClipsDescendants"},
+			Text = {"Text", "TextColor3", "TextSize", "TextScaled", "Font", "TextWrapped", "TextXAlignment", "TextYAlignment", "TextTransparency", "TextStrokeTransparency", "TextStrokeColor3", "PlaceholderText", "PlaceholderColor3", "TextEditable"}
+		}
+		local propGroupMap = {}
+		for groupName, props in pairs(propGroups) do
+			for _, prop in ipairs(props) do propGroupMap[prop] = groupName end
+		end
+
 		for _, prop in ipairs(propsToProcess) do
 			if prop ~= "Name" and not blacklist[prop] and not varyingPropsSet[prop] then
 				local ok, val = pcall(function() return inst[prop] end)
@@ -115,14 +130,28 @@ function CodeGenerator.generate(root, settings, commonProps, propsByClass, utils
 					if not utils.valuesEqual(val, defaultVal) and prop ~= "Parent" then
 						local success, serialized = pcall(function() return utils.serializeValue(val) end)
 						if success and serialized then
-							table.insert(propertyLines, string.format("%s%s.%s = %s", currentIndent, varName, prop, serialized))
+							local line = string.format("%s%s.%s = %s", currentIndent, varName, prop, serialized)
+							local group = propGroupMap[prop]
+							if group == "Layout" then table.insert(layoutProps, line)
+							elseif group == "Visual" then table.insert(visualProps, line)
+							elseif group == "Text" then table.insert(textProps, line)
+							else table.insert(otherProps, line) end
 						end
 					end
 				end
 			end
 		end
-		table.sort(propertyLines)
-		for _, line in ipairs(propertyLines) do table.insert(lines, line) end
+
+		-- Gabungkan dan urutkan properti dalam kelompok mereka
+		local function sortAndAdd(propList)
+			table.sort(propList)
+			for _, line in ipairs(propList) do table.insert(lines, line) end
+		end
+
+		if #layoutProps > 0 then table.insert(lines, ""); sortAndAdd(layoutProps) end
+		if #visualProps > 0 then table.insert(lines, ""); sortAndAdd(visualProps) end
+		if #textProps > 0 then table.insert(lines, ""); sortAndAdd(textProps) end
+		if #otherProps > 0 then table.insert(lines, ""); sortAndAdd(otherProps) end
 
 		local attributes = inst:GetAttributes()
 		local attributeLines = {}

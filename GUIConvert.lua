@@ -39,6 +39,9 @@ local lastSyncSettings = nil
 -- Pre-declare functions for mutual recursion / ordering
 local reSync
 local showStatus 
+local connectInstance
+local disconnectInstance
+local onDescendantRemoving
 
 -- Daftar properti yang akan diserialisasi
 local COMMON_PROPERTIES = {
@@ -65,13 +68,21 @@ local PROPERTIES_BY_CLASS = {
 local function stopSyncing()
 	if not syncingInstance then return end
 	print("[GUIConvert] Menghentikan sinkronisasi untuk " .. syncingInstance:GetFullName())
-	for _, connection in ipairs(syncConnections) do
-		connection:Disconnect()
+
+	-- Putuskan semua koneksi yang tersimpan
+	for inst, connections in pairs(syncConnections) do
+		for _, connection in ipairs(connections) do
+			connection:Disconnect()
+		end
 	end
+
 	syncConnections = {}
 	syncingInstance = nil
 	syncingScript = nil
-	if debounceTimer then task.cancel(debounceTimer) end
+	if debounceTimer then
+		task.cancel(debounceTimer)
+		debounceTimer = nil
+	end
 	if controls and controls.StatusLabel then
 		controls.StatusLabel.Visible = false
 		controls.StatusLabel.Text = ""
@@ -120,14 +131,57 @@ reSync = function()
 				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. currentUserCode .. endMarker, 1)
 			end
 			syncingScript.Source = generated
-			controls.StatusLabel.Text = "Status: Tersinkronisasi"
+			controls.StatusLabel.Text = string.format("Status: Tersinkronisasi @ %s", os.date("%H:%M:%S"))
 			controls.StatusLabel.TextColor3 = Color3.fromRGB(120, 255, 120)
 		else
 			warn("[GUIConvert] Gagal melakukan sinkronisasi ulang:", generated)
 			controls.StatusLabel.Text = "Status: Kesalahan Sinkronisasi!"
 			controls.StatusLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
 		end
+		debounceTimer = nil
 	end)
+end
+
+disconnectInstance = function(inst)
+	if syncConnections[inst] then
+		for _, connection in ipairs(syncConnections[inst]) do
+			connection:Disconnect()
+		end
+		syncConnections[inst] = nil
+	end
+end
+
+onDescendantRemoving = function(descendant)
+	-- Putuskan koneksi dari turunan yang dihapus dan semua turunannya sendiri
+	for _, inst in ipairs(descendant:GetDescendants()) do
+		disconnectInstance(inst)
+	end
+	disconnectInstance(descendant)
+	reSync()
+end
+
+connectInstance = function(inst)
+	if syncConnections[inst] then return end -- Sudah terhubung
+
+	local propsToWatch, propSet = {}, {}
+	if inst:IsA("GuiObject") then
+		for _, prop in ipairs(COMMON_PROPERTIES) do if not propSet[prop] then table.insert(propsToWatch, prop); propSet[prop] = true end end
+	end
+	local classSpecificProps = PROPERTIES_BY_CLASS[inst.ClassName]
+	if classSpecificProps then
+		for _, prop in ipairs(classSpecificProps) do if not propSet[prop] then table.insert(propsToWatch, prop); propSet[prop] = true end end
+	end
+
+	syncConnections[inst] = {}
+
+	for _, prop in ipairs(propsToWatch) do
+		local success, signal = pcall(function()
+			return inst:GetPropertyChangedSignal(prop)
+		end)
+		if success and signal then
+			table.insert(syncConnections[inst], signal:Connect(reSync))
+		end
+	end
 end
 
 local function startSyncing(guiObject, script, settings)
@@ -136,30 +190,17 @@ local function startSyncing(guiObject, script, settings)
 	syncingScript = script
 	lastSyncSettings = settings
 
-	local function connectInstance(inst)
-		local propsToWatch, propSet = {}, {}
-		if inst:IsA("GuiObject") then
-			for _, prop in ipairs(COMMON_PROPERTIES) do if not propSet[prop] then table.insert(propsToWatch, prop); propSet[prop] = true end end
-		end
-		local classSpecificProps = PROPERTIES_BY_CLASS[inst.ClassName]
-		if classSpecificProps then
-			for _, prop in ipairs(classSpecificProps) do if not propSet[prop] then table.insert(propsToWatch, prop); propSet[prop] = true end end
-		end
-
-		for _, prop in ipairs(propsToWatch) do
-			local success, signal = pcall(function()
-				return inst:GetPropertyChangedSignal(prop)
-			end)
-			if success and signal then
-				table.insert(syncConnections, signal:Connect(reSync))
-			end
-		end
+	-- Hubungkan instance root dan semua turunannya
+	connectInstance(guiObject)
+	for _, inst in ipairs(guiObject:GetDescendants()) do
+		connectInstance(inst)
 	end
 
-	for _, inst in ipairs(guiObject:GetDescendants()) do connectInstance(inst) end
-	connectInstance(guiObject)
-	table.insert(syncConnections, guiObject.DescendantAdded:Connect(function(d) connectInstance(d); reSync() end))
-	table.insert(syncConnections, guiObject.DescendantRemoving:Connect(reSync))
+	-- Buat koneksi level-root untuk penambahan/penghapusan turunan dan penghancuran
+	syncConnections[guiObject] = syncConnections[guiObject] or {}
+	table.insert(syncConnections[guiObject], guiObject.DescendantAdded:Connect(function(d) connectInstance(d); reSync() end))
+	table.insert(syncConnections[guiObject], guiObject.DescendantRemoving:Connect(onDescendantRemoving))
+	table.insert(syncConnections[guiObject], guiObject.Destroying:Connect(stopSyncing))
 
 	print("[GUIConvert] Memulai sinkronisasi untuk " .. guiObject:GetFullName())
 	controls.StatusLabel.Text = "Status: Sinkronisasi aktif"
@@ -353,6 +394,11 @@ local function updateSelectionUI()
 		else
 			controls.IgnoreButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
 			controls.IgnoreButton.Text = " [ ] Abaikan Objek & Turunannya"
+		end
+		-- Daftar Hitam Otomatis Cerdas
+		if obj:IsA("UIListLayout") or obj:IsA("UIGridLayout") then
+			controls.setBlacklistState("Position", true)
+			controls.setBlacklistState("Size", true)
 		end
 	else
 		controls.IgnoreButton.Visible = false
