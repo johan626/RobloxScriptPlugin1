@@ -4,9 +4,12 @@
 local UI = {}
 
 function UI.create(configWidget, plugin, settings)
-	local mainFrame = Instance.new("Frame")
+	local mainFrame = Instance.new("ScrollingFrame")
 	mainFrame.Size = UDim2.new(1, 0, 1, 0)
 	mainFrame.BackgroundColor3 = Color3.fromRGB(41, 42, 45)
+	mainFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	mainFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+	mainFrame.ScrollBarThickness = 7
 	mainFrame.BorderSizePixel = 0
 	mainFrame.Parent = configWidget
 
@@ -198,24 +201,8 @@ function UI.create(configWidget, plugin, settings)
 	blacklistLabel.BackgroundTransparency = 1
 	blacklistLabel.Parent = mainFrame
 
-	local searchBox = Instance.new("TextBox")
-	searchBox.Name = "SearchBox"
-	searchBox.LayoutOrder = 10
-	searchBox.Size = UDim2.new(1, 0, 0, 24)
-	searchBox.Font = Enum.Font.SourceSans
-	searchBox.TextSize = 14
-	searchBox.PlaceholderText = "Cari properti..."
-	searchBox.TextColor3 = Color3.fromRGB(220, 220, 220)
-	searchBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-	searchBox.BorderColor3 = Color3.fromRGB(50, 50, 50)
-	searchBox.ClearTextOnFocus = false
-	searchBox.Parent = mainFrame
-	local searchCorner = Instance.new("UICorner")
-	searchCorner.CornerRadius = UDim.new(0, 4)
-	searchCorner.Parent = searchBox
-
 	local bulkActionFrame = Instance.new("Frame")
-	bulkActionFrame.LayoutOrder = 11
+	bulkActionFrame.LayoutOrder = 10
 	bulkActionFrame.Size = UDim2.new(1, 0, 0, 22)
 	bulkActionFrame.BackgroundTransparency = 1
 	bulkActionFrame.Parent = mainFrame
@@ -253,8 +240,8 @@ function UI.create(configWidget, plugin, settings)
 	deselectAllCorner.Parent = deselectAllButton
 
 	local blacklistFrame = Instance.new("ScrollingFrame")
-	blacklistFrame.LayoutOrder = 12
-	blacklistFrame.Size = UDim2.new(1, 0, 1, -355) -- Adjusted size for search box and buttons
+	blacklistFrame.LayoutOrder = 11
+	blacklistFrame.Size = UDim2.new(1, 0, 1, -331) -- Adjusted size
 	blacklistFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	blacklistFrame.BorderSizePixel = 1
 	blacklistFrame.BorderColor3 = Color3.fromRGB(50, 50, 50)
@@ -367,7 +354,7 @@ function UI.create(configWidget, plugin, settings)
 
 	local convertButton = Instance.new("TextButton")
 	convertButton.Name = "ConvertButton"
-	convertButton.LayoutOrder = 13
+	convertButton.LayoutOrder = 12
 	convertButton.Text = "Convert"
 	convertButton.Size = UDim2.new(1, 0, 0, 32)
 	convertButton.BackgroundColor3 = Color3.fromRGB(80, 120, 200)
@@ -393,7 +380,7 @@ function UI.create(configWidget, plugin, settings)
 
 	local exampleCodeButton = Instance.new("TextButton")
 	exampleCodeButton.Name = "ExampleCodeButton"
-	exampleCodeButton.LayoutOrder = 14
+	exampleCodeButton.LayoutOrder = 13
 	exampleCodeButton.Text = "Get Example Code"
 	exampleCodeButton.Size = UDim2.new(1, 0, 0, 28)
 	exampleCodeButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
@@ -411,7 +398,7 @@ function UI.create(configWidget, plugin, settings)
 
 	local statusLabel = Instance.new("TextLabel")
 	statusLabel.Name = "StatusLabel"
-	statusLabel.LayoutOrder = 15
+	statusLabel.LayoutOrder = 14
 	statusLabel.Size = UDim2.new(1, 0, 0, 20)
 	statusLabel.Font = Enum.Font.SourceSans
 	statusLabel.Text = ""
@@ -427,6 +414,10 @@ function UI.create(configWidget, plugin, settings)
 		updateScriptTypeButton()
 	end)
 
+	listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		mainFrame.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y)
+	end)
+
 	return {
 		SelectionLabel = selectionLabel,
 		ScriptTypeButton = scriptTypeButton,
@@ -437,7 +428,6 @@ function UI.create(configWidget, plugin, settings)
 		ConvertButton = convertButton,
 		ExampleCodeButton = exampleCodeButton,
 		StatusLabel = statusLabel,
-		SearchBox = searchBox,
 		SelectAllButton = selectAllButton,
 		DeselectAllButton = deselectAllButton,
 		IgnoreButton = ignoreButton,
