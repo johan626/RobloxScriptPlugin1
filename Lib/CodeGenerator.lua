@@ -16,6 +16,7 @@ function CodeGenerator.generate(root, settings, commonProps, propsByClass, utils
 	local instances = utils.collectGuiInstances(root)
 	local varMap = {}
 	local lines = {}
+	local parentingLines = {}
 	local rootVarName = ""
 	local processedInstances = {}
 
@@ -153,12 +154,17 @@ function CodeGenerator.generate(root, settings, commonProps, propsByClass, utils
 		if #textProps > 0 then table.insert(lines, ""); sortAndAdd(textProps) end
 		if #otherProps > 0 then table.insert(lines, ""); sortAndAdd(otherProps) end
 
+		-- Atribut
 		local attributes = inst:GetAttributes()
 		local attributeLines = {}
-		for name, value in pairs(attributes) do
+		local attributeKeys = {}
+		for name, _ in pairs(attributes) do table.insert(attributeKeys, name) end
+		table.sort(attributeKeys)
+
+		for _, name in ipairs(attributeKeys) do
+			local value = attributes[name]
 			local t = typeof(value)
-			if t == "Instance" or t == "RBXScriptSignal" or t == "function" or t == "thread" then
-			else
+			if t ~= "Instance" and t ~= "RBXScriptSignal" and t ~= "function" and t ~= "thread" then
 				local success, serialized = pcall(function() return utils.serializeValue(value) end)
 				if success and serialized then
 					table.insert(attributeLines, string.format('%s%s:SetAttribute(%q, %s)', currentIndent, varName, name, serialized))
@@ -168,12 +174,12 @@ function CodeGenerator.generate(root, settings, commonProps, propsByClass, utils
 
 		if #attributeLines > 0 then
 			table.insert(lines, "")
-			table.sort(attributeLines)
+			table.insert(lines, string.format("%s-- Atribut", currentIndent))
 			for _, attrLine in ipairs(attributeLines) do table.insert(lines, attrLine) end
 		end
 
 		if parentVar then
-			table.insert(lines, string.format("%s%s.Parent = %s", currentIndent, varName, parentVar))
+			table.insert(parentingLines, string.format("%s%s.Parent = %s", currentIndent, varName, parentVar))
 		end
 
 		for _, child in ipairs(inst:GetChildren()) do
@@ -218,7 +224,7 @@ function CodeGenerator.generate(root, settings, commonProps, propsByClass, utils
 			table.insert(lines, string.format("%s\tend", indent))
 			local parentVarName = varMap[inst.Parent]
 			if parentVarName then
-				table.insert(lines, string.format("%s\tnewInstance.Parent = %s", indent, parentVarName))
+				table.insert(parentingLines, string.format("%s\tnewInstance.Parent = %s", indent, parentVarName))
 			end
 			table.insert(lines, string.format("%send", indent))
 			table.insert(lines, string.format("%s%s:Destroy()", indent, templateVarName))
@@ -235,6 +241,14 @@ function CodeGenerator.generate(root, settings, commonProps, propsByClass, utils
 
 	if #lines > 0 and lines[#lines] == "" then
 		table.remove(lines)
+	end
+
+	if #parentingLines > 0 then
+		table.insert(lines, "")
+		table.insert(lines, string.format("%s-- Menetapkan Induk untuk membangun hierarki", indent))
+		for _, line in ipairs(parentingLines) do
+			table.insert(lines, line)
+		end
 	end
 
 	if isModule then

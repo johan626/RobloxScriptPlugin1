@@ -126,16 +126,17 @@ end
 
 function Utils.generateExampleCode(moduleScript)
 	local path = moduleScript:GetFullName()
-	path = path:gsub("^.*StarterPlayerScripts%.", "") 
+	path = path:gsub("^.*ReplicatedStorage%.", "")
 	local moduleName = moduleScript.Name
 	local varName = Utils.generateSafeVarName(moduleName)
 	local lines = {
 		string.format("-- Contoh penggunaan untuk '%s'", moduleName),
 		"",
+		"local ReplicatedStorage = game:GetService('ReplicatedStorage')",
 		"local Players = game:GetService('Players')",
 		"",
 		string.format("-- Pastikan path ini benar! Mungkin perlu disesuaikan jika Anda memindahkan skrip."),
-		string.format("local %sModule = require(Players.LocalPlayer.PlayerScripts.%s)", varName, path),
+		string.format("local %sModule = require(ReplicatedStorage.%s)", varName, path),
 		"",
 		"local player = Players.LocalPlayer",
 		"local playerGui = player:WaitForChild('PlayerGui')",

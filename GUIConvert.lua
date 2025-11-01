@@ -10,6 +10,7 @@ local HttpService = game:GetService("HttpService")
 local Utils = require(script.Lib.Utils)
 local TemplateFinder = require(script.Lib.TemplateFinder)
 local CodeGenerator = require(script.Lib.CodeGenerator)
+local SyntaxHighlighter = require(script.Lib.SyntaxHighlighter)
 local UI = require(script.Lib.UI)
 
 -- Inisialisasi Plugin UI
@@ -35,28 +36,115 @@ local syncingScript = nil
 local syncConnections = {}
 local debounceTimer = nil
 local lastSyncSettings = nil
+local previewDebounceTimer = nil
+local blacklistProfiles = {}
+local activeProfileName = "Default"
 
 -- Pre-declare functions for mutual recursion / ordering
 local reSync
 local showStatus 
 local connectInstance
 local disconnectInstance
-local onDescendantRemoving
+local saveBlacklistProfiles
+local applyBlacklistProfile
+local updateCodePreview
+
+-- Fungsi Manajemen Profil
+function saveBlacklistProfiles()
+	local success, encoded = pcall(HttpService.JSONEncode, HttpService, blacklistProfiles)
+	if success then
+		plugin:SetSetting("BlacklistProfiles", encoded)
+	else
+		warn("[GUIConvert] Gagal menyimpan profil daftar hitam:", encoded)
+	end
+end
+
+local function loadBlacklistProfiles()
+	local saved = plugin:GetSetting("BlacklistProfiles")
+	if saved then
+		local success, decoded = pcall(HttpService.JSONDecode, HttpService, saved)
+		if success then
+			blacklistProfiles = decoded
+		else
+			warn("[GUIConvert] Gagal memuat profil daftar hitam:", decoded)
+			blacklistProfiles = {}
+		end
+	end
+	if not blacklistProfiles["Default"] then
+		blacklistProfiles["Default"] = { "Position", "Size" }
+	end
+	activeProfileName = plugin:GetSetting("ActiveProfile") or "Default"
+end
+
+function applyBlacklistProfile(profileName)
+	activeProfileName = profileName
+	plugin:SetSetting("ActiveProfile", activeProfileName)
+	local profile = blacklistProfiles[activeProfileName] or {}
+
+	local profileSet = {}
+	for _, propName in ipairs(profile) do
+		profileSet[propName] = true
+	end
+
+	for propName, checkboxData in pairs(controls.BlacklistCheckboxes) do
+		checkboxData.Toggle(profileSet[propName] == true)
+	end
+
+	controls.updateProfileDropdown(blacklistProfiles, activeProfileName)
+	updateCodePreview()
+end
+
+local function saveCurrentProfile(profileName)
+	if not profileName or profileName == "" then
+		showStatus("✗ Nama profil tidak boleh kosong.", true)
+		return
+	end
+
+	local blacklistedProps = {}
+	for propName, checkboxData in pairs(controls.BlacklistCheckboxes) do
+		if checkboxData.IsBlacklisted() then
+			table.insert(blacklistedProps, propName)
+		end
+	end
+	table.sort(blacklistedProps)
+
+	blacklistProfiles[profileName] = blacklistedProps
+	saveBlacklistProfiles()
+	applyBlacklistProfile(profileName)
+	showStatus("✓ Profil '" .. profileName .. "' disimpan.", false)
+end
+
+local function deleteProfile(profileName)
+	if profileName == "Default" then
+		showStatus("✗ Profil 'Default' tidak dapat dihapus.", true)
+		return
+	end
+
+	if blacklistProfiles[profileName] then
+		blacklistProfiles[profileName] = nil
+		saveBlacklistProfiles()
+		applyBlacklistProfile("Default")
+		showStatus("✓ Profil '" .. profileName .. "' dihapus.", false)
+	else
+		showStatus("✗ Profil '" .. profileName .. "' tidak ditemukan.", true)
+	end
+end
 
 -- Daftar properti yang akan diserialisasi
 local COMMON_PROPERTIES = {
-	"Name","AnchorPoint","AutomaticSize","Position","Rotation","Size","Visible","ZIndex","LayoutOrder",
-	"BackgroundColor3","BackgroundTransparency","BorderSizePixel","Image","ImageTransparency","ImageColor3","ScaleType","SliceCenter","SliceScale","ImageRectOffset","ImageRectSize","ClipsDescendants",
-	"Text","TextColor3","TextSize","TextScaled","Font","TextWrapped","TextXAlignment","TextYAlignment","TextTransparency","TextStrokeTransparency","TextStrokeColor3","PlaceholderText","PlaceholderColor3","TextEditable",
+	"Name","AnchorPoint","AutomaticSize","Position","Rotation","Size","Visible","ZIndex","LayoutOrder", "Active", "SizeConstraint",
+	"BackgroundColor3","BackgroundTransparency","BorderSizePixel", "BorderColor3", "BorderMode",
+	"Image","ImageTransparency","ImageColor3","ScaleType","SliceCenter","SliceScale","ImageRectOffset","ImageRectSize","ClipsDescendants", "TileSize", "ResampleMode",
+	"Text","TextColor3","TextSize","TextScaled","Font","TextWrapped","TextXAlignment","TextYAlignment","TextTransparency","TextStrokeTransparency","TextStrokeColor3","PlaceholderText","PlaceholderColor3","TextEditable", "FontFace", "LineHeight", "RichText", "TextDirection", "TextTruncate",
 	"AutoButtonColor","ResetOnSpawn","Selectable","Modal","Style"
 }
 local PROPERTIES_BY_CLASS = {
 	UICorner = {"CornerRadius"},
 	UIGradient = {"Color", "Enabled", "Offset", "Rotation", "Transparency"},
-	UIStroke = {"ApplyStrokeMode", "Color", "Enabled", "LineJoinMode", "Thickness", "Transparency"},
+	UIStroke = {"ApplyStrokeMode", "Color", "Enabled", "LineJoinMode", "Thickness", "Transparency", "BorderOffset", "BorderStrokePosition", "StrokeSizingMode", "ZIndex"},
 	UIAspectRatioConstraint = {"AspectRatio", "AspectType", "DominantAxis"},
 	UIGridLayout = {"AbsoluteContentSize", "CellPadding", "CellSize", "FillDirection", "HorizontalAlignment", "SortOrder", "StartCorner", "VerticalAlignment"},
-	UIListLayout = {"AbsoluteContentSize", "FillDirection", "HorizontalAlignment", "Padding", "SortOrder", "VerticalAlignment"},
+	UIListLayout = {"AbsoluteContentSize", "FillDirection", "HorizontalAlignment", "Padding", "SortOrder", "VerticalAlignment", "HorizontalFlex", "VerticalFlex"},
 	UIPadding = {"PaddingBottom", "PaddingLeft", "PaddingRight", "PaddingTop"},
 	UIScale = {"Scale"},
 	UISizeConstraint = {"MaxSize", "MinSize"},
@@ -131,6 +219,9 @@ reSync = function()
 				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. currentUserCode .. endMarker, 1)
 			end
 			syncingScript.Source = generated
+			if lastSyncSettings.AutoOpen then
+				plugin:OpenScript(syncingScript) -- Paksa editor untuk memuat ulang
+			end
 			controls.StatusLabel.Text = string.format("Status: Tersinkronisasi @ %s", os.date("%H:%M:%S"))
 			controls.StatusLabel.TextColor3 = Color3.fromRGB(120, 255, 120)
 		else
@@ -149,15 +240,6 @@ disconnectInstance = function(inst)
 		end
 		syncConnections[inst] = nil
 	end
-end
-
-onDescendantRemoving = function(descendant)
-	-- Putuskan koneksi dari turunan yang dihapus dan semua turunannya sendiri
-	for _, inst in ipairs(descendant:GetDescendants()) do
-		disconnectInstance(inst)
-	end
-	disconnectInstance(descendant)
-	reSync()
 end
 
 connectInstance = function(inst)
@@ -182,6 +264,21 @@ connectInstance = function(inst)
 			table.insert(syncConnections[inst], signal:Connect(reSync))
 		end
 	end
+
+	-- Tambahkan listener untuk perubahan atribut
+	table.insert(syncConnections[inst], inst.AttributeChanged:Connect(function(attributeName)
+		reSync()
+	end))
+
+	-- Tambahkan listener untuk perubahan hierarki
+	table.insert(syncConnections[inst], inst.ChildAdded:Connect(function(child)
+		connectInstance(child) -- Pastikan turunan baru juga diamati
+		reSync()
+	end))
+	table.insert(syncConnections[inst], inst.ChildRemoved:Connect(function(child)
+		disconnectInstance(child) -- Hentikan pengamatan pada turunan yang dihapus
+		reSync()
+	end))
 end
 
 local function startSyncing(guiObject, script, settings)
@@ -196,10 +293,8 @@ local function startSyncing(guiObject, script, settings)
 		connectInstance(inst)
 	end
 
-	-- Buat koneksi level-root untuk penambahan/penghapusan turunan dan penghancuran
+	-- Buat koneksi level-root untuk penghancuran
 	syncConnections[guiObject] = syncConnections[guiObject] or {}
-	table.insert(syncConnections[guiObject], guiObject.DescendantAdded:Connect(function(d) connectInstance(d); reSync() end))
-	table.insert(syncConnections[guiObject], guiObject.DescendantRemoving:Connect(onDescendantRemoving))
 	table.insert(syncConnections[guiObject], guiObject.Destroying:Connect(stopSyncing))
 
 	print("[GUIConvert] Memulai sinkronisasi untuk " .. guiObject:GetFullName())
@@ -208,14 +303,9 @@ local function startSyncing(guiObject, script, settings)
 	controls.StatusLabel.Visible = true
 end
 
-local function performConversion(settings)
-	local sel = Selection:Get()
-	if not sel or #sel == 0 then
-		return nil, "Pilih ScreenGui atau root GuiObject di Explorer."
-	end
-	local root = sel[1]
-	if not Utils.isGuiObject(root) and not root:IsA("ScreenGui") then
-		return nil, "Objek terpilih bukan GuiObject/ScreenGui."
+local function performConversion(root, settings)
+	if not root or (not Utils.isGuiObject(root) and not root:IsA("ScreenGui")) then
+		return nil, "Objek terpilih bukan GuiObject/ScreenGui yang valid."
 	end
 
 	local success, generated = pcall(generateLuaForGui, root, settings)
@@ -228,17 +318,19 @@ local function performConversion(settings)
 end
 
 local function createFile(generated, rootName, settings)
-	local starterScripts = StarterPlayer:FindFirstChild("StarterPlayerScripts") or Instance.new("Folder", StarterPlayer)
-	starterScripts.Name = "StarterPlayerScripts"
-
-	local scriptInstance, folderName
+	local scriptInstance, folderName, parentService
 	if settings.ScriptType == "ModuleScript" then
-		scriptInstance, folderName = Instance.new("ModuleScript"), "GeneratedGuis"
+		scriptInstance = Instance.new("ModuleScript")
+		folderName = "GeneratedGuis"
+		parentService = game:GetService("ReplicatedStorage")
 	else
-		scriptInstance, folderName = Instance.new("LocalScript"), "GeneratedLocalGuis"
+		scriptInstance = Instance.new("LocalScript")
+		folderName = "GeneratedLocalGuis"
+		parentService = StarterPlayer:FindFirstChild("StarterPlayerScripts") or Instance.new("Folder", StarterPlayer)
+		parentService.Name = "StarterPlayerScripts"
 	end
 
-	local targetFolder = starterScripts:FindFirstChild(folderName) or Instance.new("Folder", starterScripts)
+	local targetFolder = parentService:FindFirstChild(folderName) or Instance.new("Folder", parentService)
 	targetFolder.Name = folderName
 
 	local nameSafe = rootName:gsub("%W", "")
@@ -255,15 +347,72 @@ local function createFile(generated, rootName, settings)
 				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. userCode .. endMarker, 1)
 			end
 			existing.Source = generated
+			plugin:OpenScript(existing)
 			return string.format("%s '%s' berhasil diperbarui.", settings.ScriptType, existing.Name), existing
 		end
 	end
 
 	scriptInstance.Source = generated
 	scriptInstance.Parent = targetFolder
+	plugin:OpenScript(scriptInstance)
 
 	return string.format("%s '%s' berhasil dibuat.", settings.ScriptType, scriptInstance.Name), scriptInstance
 end
+
+updateCodePreview = function()
+	if previewDebounceTimer then
+		task.cancel(previewDebounceTimer)
+	end
+
+	previewDebounceTimer = task.delay(0.2, function()
+		local blacklistedProps = {}
+		for propName, checkboxData in pairs(controls.BlacklistCheckboxes) do
+			if checkboxData.IsBlacklisted() then
+				table.insert(blacklistedProps, propName)
+			end
+		end
+		table.sort(blacklistedProps)
+		local blacklistJson = HttpService:JSONEncode(blacklistedProps)
+		local settings = {
+			ScriptType = controls.ScriptTypeButton.Text,
+			AddTraceComments = controls.IsCommentsEnabled(),
+			OverwriteExisting = controls.IsOverwriteEnabled(),
+			PropertyBlacklist = blacklistJson,
+			LiveSyncEnabled = controls.IsLiveSyncEnabled(),
+			AutoOpen = controls.IsAutoOpenEnabled()
+		}
+
+		if lastSyncSettings then
+			lastSyncSettings = settings
+		end
+
+		local sel = Selection:Get()
+		if not sel or #sel == 0 then
+			controls.CodePreviewLabel.Text = "-- Pilih objek GUI untuk melihat pratinjau kode..."
+			return
+		end
+		local root = sel[1]
+		if not Utils.isGuiObject(root) and not root:IsA("ScreenGui") then
+			controls.CodePreviewLabel.Text = "-- Objek yang dipilih bukan GuiObject/ScreenGui yang valid."
+			return
+		end
+
+		local success, generated = pcall(generateLuaForGui, root, settings)
+
+		if success then
+			local ok, highlighted = pcall(SyntaxHighlighter.highlight, generated)
+			if ok then
+				controls.CodePreviewLabel.Text = highlighted
+			else
+				warn("[GUIConvert] Syntax highlighting failed:", highlighted)
+				controls.CodePreviewLabel.Text = generated -- Fallback to plain text
+			end
+		else
+			controls.CodePreviewLabel.Text = "-- Terjadi kesalahan saat membuat pratinjau kode:\n" .. tostring(generated)
+		end
+	end)
+end
+
 
 local function handleContextualConversion(selection)
 	local settings = {
@@ -271,34 +420,54 @@ local function handleContextualConversion(selection)
 		AddTraceComments = plugin:GetSetting("AddTraceComments") ~= false,
 		OverwriteExisting = plugin:GetSetting("OverwriteExisting") ~= false,
 		PropertyBlacklist = plugin:GetSetting("PropertyBlacklist") or HttpService:JSONEncode({"Position", "Size"}),
+		AutoOpen = plugin:GetSetting("AutoOpen") ~= false
 	}
-	local root = selection and selection[1]
-	if not root then
-		showStatus("✗ Tidak ada objek yang dipilih untuk konversi kontekstual.", true)
+
+	if not selection or #selection == 0 then
+		showStatus("✗ Tidak ada objek yang dipilih untuk konversi.", true)
 		return
 	end
-	if not (Utils.isGuiObject(root) or root:IsA("ScreenGui")) then
-		showStatus("✗ Objek yang dipilih tidak valid untuk konversi.", true)
-		return
+
+	local successCount = 0
+	local failCount = 0
+
+	for _, rootObject in ipairs(selection) do
+		local generated, err = performConversion(rootObject, settings)
+		if generated then
+			createFile(generated, rootObject.Name, settings)
+			successCount = successCount + 1
+		else
+			warn(string.format("[GUIConvert] Gagal mengonversi %s: %s", rootObject:GetFullName(), tostring(err)))
+			failCount = failCount + 1
+		end
 	end
-	local success, generated = pcall(generateLuaForGui, root, settings)
-	if not success then
-		showStatus("✗ Gagal menghasilkan kode.", true)
-		warn("[GUIConvert] Gagal menghasilkan kode:", generated)
-		return
+
+	if successCount > 0 then
+		local summary = string.format("✓ Berhasil mengonversi %d GUI.", successCount)
+		if failCount > 0 then
+			summary = summary .. string.format(" (%d gagal)", failCount)
+		end
+		showStatus(summary, false)
+	else
+		showStatus(string.format("✗ Gagal mengonversi %d GUI.", failCount), true)
 	end
-	local resultName = root.Name
-	local successMsg, _ = createFile(generated, resultName, settings)
-	showStatus("✓ " .. successMsg, false)
 end
 
 -- Inisialisasi UI
+loadBlacklistProfiles()
 local uiSettings = {
 	COMMON_PROPERTIES = COMMON_PROPERTIES,
 	PROPERTIES_BY_CLASS = PROPERTIES_BY_CLASS,
 	stopSyncing = stopSyncing,
+	updateCodePreview = updateCodePreview,
+	saveProfile = saveCurrentProfile,
+	deleteProfile = deleteProfile,
+	applyProfile = applyBlacklistProfile,
+	getProfiles = function() return blacklistProfiles end,
+	getActiveProfile = function() return activeProfileName end,
 }
 controls = UI.create(configWidget, plugin, uiSettings)
+applyBlacklistProfile(activeProfileName)
 
 -- Definisi Fungsi Status (setelah `controls` ada)
 local statusTimer
@@ -331,27 +500,66 @@ controls.ConvertButton.MouseButton1Click:Connect(function()
 		AddTraceComments = controls.IsCommentsEnabled(),
 		OverwriteExisting = controls.IsOverwriteEnabled(),
 		PropertyBlacklist = blacklistJson,
-		LiveSyncEnabled = controls.IsLiveSyncEnabled()
+		LiveSyncEnabled = controls.IsLiveSyncEnabled(),
+		AutoOpen = controls.IsAutoOpenEnabled()
 	}
-	local generated, rootObject = performConversion(settings)
-	if generated then
-		local successMsg, scriptInstance = createFile(generated, rootObject.Name, settings)
-		plugin:SetSetting("ScriptType", settings.ScriptType)
-		plugin:SetSetting("AddTraceComments", settings.AddTraceComments)
-		plugin:SetSetting("OverwriteExisting", settings.OverwriteExisting)
-		plugin:SetSetting("PropertyBlacklist", settings.PropertyBlacklist)
-		plugin:SetSetting("LiveSyncEnabled", settings.LiveSyncEnabled)
-		if settings.LiveSyncEnabled then
-			startSyncing(rootObject, scriptInstance, settings)
+
+	local selection = Selection:Get()
+	if #selection == 0 then
+		showStatus("✗ Tidak ada objek yang dipilih untuk dikonversi.", true)
+		return
+	end
+
+	local successCount = 0
+	local failCount = 0
+	local lastSuccessScript = nil
+	local lastSuccessRoot = nil
+
+	for _, rootObject in ipairs(selection) do
+		local generated, err = performConversion(rootObject, settings)
+		if generated then
+			local _, scriptInstance = createFile(generated, rootObject.Name, settings)
+			lastSuccessScript = scriptInstance
+			lastSuccessRoot = rootObject
+			successCount = successCount + 1
+		else
+			warn(string.format("[GUIConvert] Gagal mengonversi %s: %s", rootObject:GetFullName(), tostring(err)))
+			failCount = failCount + 1
+		end
+	end
+
+	plugin:SetSetting("ScriptType", settings.ScriptType)
+	plugin:SetSetting("AddTraceComments", settings.AddTraceComments)
+	plugin:SetSetting("OverwriteExisting", settings.OverwriteExisting)
+	plugin:SetSetting("PropertyBlacklist", settings.PropertyBlacklist)
+	plugin:SetSetting("LiveSyncEnabled", settings.LiveSyncEnabled)
+	plugin:SetSetting("AutoOpen", settings.AutoOpen)
+
+	if successCount > 0 then
+		if settings.LiveSyncEnabled and lastSuccessScript and lastSuccessRoot then
+			if #selection > 1 then
+				showStatus("✓ Peringatan: Live Sync hanya aktif pada objek terakhir.", false)
+				task.delay(2, function() startSyncing(lastSuccessRoot, lastSuccessScript, settings) end)
+			else
+				startSyncing(lastSuccessRoot, lastSuccessScript, settings)
+			end
 		else
 			stopSyncing()
-			showStatus("✓ " .. successMsg, false)
 		end
+
+		local summary = string.format("✓ Berhasil mengonversi %d GUI.", successCount)
+		if failCount > 0 then
+			summary = summary .. string.format(" (%d gagal)", failCount)
+		end
+		showStatus(summary, false)
 	else
-		showStatus("✗ " .. rootObject, true)
+		showStatus(string.format("✗ Gagal mengonversi %d GUI.", failCount), true)
 		stopSyncing()
 	end
 end)
+
+controls.SelectAllButton.MouseButton1Click:Connect(updateCodePreview)
+controls.ScriptTypeButton.MouseButton1Click:Connect(updateCodePreview)
 
 controls.ExampleCodeButton.MouseButton1Click:Connect(function()
 	local sel = Selection:Get()
@@ -413,7 +621,10 @@ local function updateSelectionUI()
 end
 
 -- Hubungkan sinyal ke fungsi baru
-Selection.SelectionChanged:Connect(updateSelectionUI)
+Selection.SelectionChanged:Connect(function()
+	updateSelectionUI()
+	updateCodePreview()
+end)
 
 controls.IgnoreButton.MouseButton1Click:Connect(function()
 	local sel = Selection:Get()
@@ -424,6 +635,7 @@ controls.IgnoreButton.MouseButton1Click:Connect(function()
 
 		-- PERBAIKAN: Panggil fungsi secara langsung, bukan :Fire()
 		updateSelectionUI()
+		updateCodePreview()
 
 		if syncingInstance then reSync() end
 	end
