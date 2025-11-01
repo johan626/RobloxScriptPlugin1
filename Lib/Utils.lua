@@ -126,7 +126,7 @@ end
 
 function Utils.generateExampleCode(moduleScript)
 	local path = moduleScript:GetFullName()
-	path = path:gsub("^.*ReplicatedStorage%.", "")
+	path = path:gsub("^.*ReplicatedStorage%.", "") 
 	local moduleName = moduleScript.Name
 	local varName = Utils.generateSafeVarName(moduleName)
 	local lines = {
