@@ -260,6 +260,7 @@ function UI.create(configWidget, plugin, settings)
 	profileNameInput.Name = "ProfileNameInput"
 	profileNameInput.Size = UDim2.new(1, -120, 0, 28)
 	profileNameInput.Position = UDim2.new(0, 0, 0, 32)
+	profileNameInput.Text = ""
 	profileNameInput.PlaceholderText = "Nama Profil Baru..."
 	profileNameInput.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	profileNameInput.Font = Enum.Font.SourceSans
