@@ -12,7 +12,7 @@ local COLORS = {
 	number = "#B5CEA8",
 	comment = "#6A9955",
 	-- 'nil', 'true', 'false'
-	special = "#4EC9B0",
+	special = "#4EC9B0", 
 	-- 'self'
 	variable = "#9CDCFE"
 }
@@ -46,12 +46,12 @@ function SyntaxHighlighter.highlight(source)
 
 	-- 3. Sorot Angka
 	source = source:gsub("(%f[%w_%.])", function(number)
-        if tonumber(number) then
-            return colorize(number, COLORS.number)
-        else
-            return number
-        end
-    end)
+		if tonumber(number) then
+			return colorize(number, COLORS.number)
+		else
+			return number
+		end
+	end)
 
 	-- 4. Sorot Kata Kunci, Spesial, dan Variabel
 	local keywordSet = {}
