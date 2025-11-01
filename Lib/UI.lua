@@ -62,8 +62,61 @@ function UI.create(configWidget, plugin, settings)
 	ignoreCorner.CornerRadius = UDim.new(0, 4)
 	ignoreCorner.Parent = ignoreButton
 
+	local currentLayoutOrder = 4
+
+	local function createCollapsibleGroup(layoutOrder, title, parent, isInitiallyExpanded)
+		local isExpanded = isInitiallyExpanded == nil and true or isInitiallyExpanded
+
+		local header = Instance.new("TextButton")
+		header.Name = title:gsub(" ", "") .. "Header"
+		header.LayoutOrder = layoutOrder
+		header.Size = UDim2.new(1, 0, 0, 28)
+		header.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+		header.Text = (isExpanded and "  ▾ " or "  ▸ ") .. title
+		header.Font = Enum.Font.SourceSansBold
+		header.TextSize = 15
+		header.TextColor3 = Color3.fromRGB(210, 210, 210)
+		header.TextXAlignment = Enum.TextXAlignment.Left
+		header.Parent = parent
+		local headerCorner = Instance.new("UICorner")
+		headerCorner.CornerRadius = UDim.new(0, 4)
+		headerCorner.Parent = header
+
+		local contentFrame = Instance.new("Frame")
+		contentFrame.Name = title:gsub(" ", "") .. "Content"
+		contentFrame.LayoutOrder = layoutOrder + 1
+		contentFrame.Size = UDim2.new(1, 0, 0, 0)
+		contentFrame.AutomaticSize = Enum.AutomaticSize.Y
+		contentFrame.BackgroundTransparency = 1
+		contentFrame.ClipsDescendants = true
+		contentFrame.Parent = parent
+		contentFrame.Visible = isExpanded
+
+		local contentLayout = Instance.new("UIListLayout")
+		contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+		contentLayout.Padding = UDim.new(0, 5)
+		contentLayout.Parent = contentFrame
+
+		local contentPadding = Instance.new("UIPadding")
+		contentPadding.PaddingTop = UDim.new(0, 8)
+		contentPadding.PaddingLeft = UDim.new(0, 8)
+		contentPadding.PaddingRight = UDim.new(0, 8)
+		contentPadding.Parent = contentFrame
+
+		header.MouseButton1Click:Connect(function()
+			isExpanded = not isExpanded
+			contentFrame.Visible = isExpanded
+			header.Text = (isExpanded and "  ▾ " or "  ▸ ") .. title
+		end)
+
+		return contentFrame, layoutOrder + 2
+	end
+
+	local generalSettingsFrame, nextLayoutOrder = createCollapsibleGroup(currentLayoutOrder, "Pengaturan Umum", mainFrame, true)
+	currentLayoutOrder = nextLayoutOrder
+
 	local typeLabel = Instance.new("TextLabel")
-	typeLabel.LayoutOrder = 4
+	typeLabel.LayoutOrder = 1
 	typeLabel.Text = "Output Script Type:"
 	typeLabel.Size = UDim2.new(1, 0, 0, 15)
 	typeLabel.Font = Enum.Font.SourceSans
@@ -71,7 +124,7 @@ function UI.create(configWidget, plugin, settings)
 	typeLabel.TextSize = 14
 	typeLabel.TextXAlignment = Enum.TextXAlignment.Left
 	typeLabel.BackgroundTransparency = 1
-	typeLabel.Parent = mainFrame
+	typeLabel.Parent = generalSettingsFrame
 
 	local savedScriptType = plugin:GetSetting("ScriptType") or "ModuleScript"
 	local scriptTypes = {"ModuleScript", "LocalScript"}
@@ -79,13 +132,13 @@ function UI.create(configWidget, plugin, settings)
 
 	local scriptTypeButton = Instance.new("TextButton")
 	scriptTypeButton.Name = "ScriptTypeButton"
-	scriptTypeButton.LayoutOrder = 5
+	scriptTypeButton.LayoutOrder = 2
 	scriptTypeButton.Text = savedScriptType
 	scriptTypeButton.Size = UDim2.new(1, 0, 0, 28)
 	scriptTypeButton.TextColor3 = Color3.fromRGB(220, 220, 220)
 	scriptTypeButton.Font = Enum.Font.SourceSans
 	scriptTypeButton.TextSize = 14
-	scriptTypeButton.Parent = mainFrame
+	scriptTypeButton.Parent = generalSettingsFrame
 	local typeCorner = Instance.new("UICorner")
 	typeCorner.CornerRadius = UDim.new(0, 4)
 	typeCorner.Parent = scriptTypeButton
@@ -104,7 +157,7 @@ function UI.create(configWidget, plugin, settings)
 	updateScriptTypeButton()
 
 	-- Fungsi pembantu baru untuk sakelar geser modern
-	local function createToggleSwitch(layoutOrder, text, tooltip, settingKey, defaultValue, changeCallback)
+	local function createToggleSwitch(parent, layoutOrder, text, tooltip, settingKey, defaultValue, changeCallback)
 		local savedValue = plugin:GetSetting(settingKey)
 		local isToggled = (savedValue == nil) and defaultValue or savedValue
 		local isControlEnabled = true
@@ -113,7 +166,7 @@ function UI.create(configWidget, plugin, settings)
 		container.LayoutOrder = layoutOrder
 		container.Size = UDim2.new(1, 0, 0, 28)
 		container.BackgroundTransparency = 1
-		container.Parent = mainFrame
+		container.Parent = parent
 
 		local label = Instance.new("TextLabel")
 		label.Size = UDim2.new(1, -50, 1, 0)
@@ -208,12 +261,14 @@ function UI.create(configWidget, plugin, settings)
 		return control
 	end
 
-	-- Buat sakelar geser menggunakan fungsi pembantu baru
-	local commentsSwitch = createToggleSwitch(6, "Trace Comments", "Menambahkan komentar ke kode yang dihasilkan yang melacak objek asli.", "AddTraceComments", true, settings.updateCodePreview)
-	local overwriteSwitch = createToggleSwitch(7, "Overwrite Existing", "Jika diaktifkan, menimpa skrip yang ada dengan nama yang sama. Kode kustom Anda akan dipertahankan.", "OverwriteExisting", true, settings.updateCodePreview)
+	local commentsSwitch = createToggleSwitch(generalSettingsFrame, 3, "Trace Comments", "Menambahkan komentar ke kode yang dihasilkan yang melacak objek asli.", "AddTraceComments", true, settings.updateCodePreview)
+	local overwriteSwitch = createToggleSwitch(generalSettingsFrame, 4, "Overwrite Existing", "Jika diaktifkan, menimpa skrip yang ada dengan nama yang sama. Kode kustom Anda akan dipertahankan.", "OverwriteExisting", true, settings.updateCodePreview)
 
-	local autoRenewSwitch -- Pre-declare
-	local liveSyncSwitch = createToggleSwitch(8, "Live Sync", "Secara otomatis memperbarui skrip saat Anda mengedit GUI sumber secara real-time.", "LiveSyncEnabled", false, function(enabled)
+	local syncSettingsFrame, nextLayoutOrder2 = createCollapsibleGroup(currentLayoutOrder, "Pengaturan Sinkronisasi Langsung", mainFrame, false)
+	currentLayoutOrder = nextLayoutOrder2
+
+	local autoRenewSwitch
+	local liveSyncSwitch = createToggleSwitch(syncSettingsFrame, 1, "Live Sync", "Secara otomatis memperbarui skrip saat Anda mengedit GUI sumber secara real-time.", "LiveSyncEnabled", false, function(enabled)
 		if not enabled then
 			settings.stopSyncing()
 		end
@@ -222,11 +277,14 @@ function UI.create(configWidget, plugin, settings)
 		end
 		settings.updateCodePreview()
 	end)
-	autoRenewSwitch = createToggleSwitch(9, "Auto Open", "Secara otomatis membuka skrip pada setiap perubahan. Dapat mengganggu alur kerja Anda.", "AutoOpen", true, settings.updateCodePreview)
-	autoRenewSwitch.SetEnabled(liveSyncSwitch.IsToggled()) -- Atur status awal
+	autoRenewSwitch = createToggleSwitch(syncSettingsFrame, 2, "Auto Open", "Secara otomatis membuka skrip pada setiap perubahan. Dapat mengganggu alur kerja Anda.", "AutoOpen", true, settings.updateCodePreview)
+	autoRenewSwitch.SetEnabled(liveSyncSwitch.IsToggled())
+
+	local blacklistSettingsFrame, nextLayoutOrder3 = createCollapsibleGroup(currentLayoutOrder, "Pengaturan Blacklist", mainFrame, true)
+	currentLayoutOrder = nextLayoutOrder3
 
 	local profileLabel = Instance.new("TextLabel")
-	profileLabel.LayoutOrder = 10
+	profileLabel.LayoutOrder = 1
 	profileLabel.Text = "Blacklist Profiles:"
 	profileLabel.Size = UDim2.new(1, 0, 0, 15)
 	profileLabel.Font = Enum.Font.SourceSans
@@ -234,13 +292,13 @@ function UI.create(configWidget, plugin, settings)
 	profileLabel.TextSize = 13
 	profileLabel.TextXAlignment = Enum.TextXAlignment.Left
 	profileLabel.BackgroundTransparency = 1
-	profileLabel.Parent = mainFrame
+	profileLabel.Parent = blacklistSettingsFrame
 
 	local profileFrame = Instance.new("Frame")
-	profileFrame.LayoutOrder = 11
+	profileFrame.LayoutOrder = 2
 	profileFrame.Size = UDim2.new(1, 0, 0, 60)
 	profileFrame.BackgroundTransparency = 1
-	profileFrame.Parent = mainFrame
+	profileFrame.Parent = blacklistSettingsFrame
 
 	local profileDropdown = Instance.new("TextButton")
 	profileDropdown.Name = "ProfileDropdown"
@@ -300,7 +358,7 @@ function UI.create(configWidget, plugin, settings)
 	deleteProfileCorner.Parent = deleteProfileButton
 
 	local blacklistLabel = Instance.new("TextLabel")
-	blacklistLabel.LayoutOrder = 12
+	blacklistLabel.LayoutOrder = 3
 	blacklistLabel.Text = "Property Blacklist:"
 	blacklistLabel.Size = UDim2.new(1, 0, 0, 15)
 	blacklistLabel.Font = Enum.Font.SourceSans
@@ -308,15 +366,30 @@ function UI.create(configWidget, plugin, settings)
 	blacklistLabel.TextSize = 13
 	blacklistLabel.TextXAlignment = Enum.TextXAlignment.Left
 	blacklistLabel.BackgroundTransparency = 1
-	blacklistLabel.Parent = mainFrame
+	blacklistLabel.Parent = blacklistSettingsFrame
 
 	local blacklistCheckboxes = {}
 
+	local searchBox = Instance.new("TextBox")
+	searchBox.Name = "PropertySearchBox"
+	searchBox.LayoutOrder = 4
+	searchBox.Size = UDim2.new(1, 0, 0, 28)
+	searchBox.Font = Enum.Font.SourceSans
+	searchBox.TextSize = 13
+	searchBox.PlaceholderText = "Cari properti..."
+	searchBox.TextColor3 = Color3.fromRGB(220, 220, 220)
+	searchBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+	searchBox.ClearTextOnFocus = false
+	searchBox.Parent = blacklistSettingsFrame
+	local searchBoxCorner = Instance.new("UICorner")
+	searchBoxCorner.CornerRadius = UDim.new(0, 4)
+	searchBoxCorner.Parent = searchBox
+
 	local bulkActionFrame = Instance.new("Frame")
-	bulkActionFrame.LayoutOrder = 13
+	bulkActionFrame.LayoutOrder = 5
 	bulkActionFrame.Size = UDim2.new(1, 0, 0, 22)
 	bulkActionFrame.BackgroundTransparency = 1
-	bulkActionFrame.Parent = mainFrame
+	bulkActionFrame.Parent = blacklistSettingsFrame
 
 	local bulkActionListLayout = Instance.new("UIListLayout")
 	bulkActionListLayout.FillDirection = Enum.FillDirection.Horizontal
@@ -352,7 +425,7 @@ function UI.create(configWidget, plugin, settings)
 	end)
 
 	local blacklistFrame = Instance.new("ScrollingFrame")
-	blacklistFrame.LayoutOrder = 14
+	blacklistFrame.LayoutOrder = 6
 	blacklistFrame.Size = UDim2.new(1, 0, 1, -367)
 	blacklistFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	blacklistFrame.BorderSizePixel = 1
@@ -360,7 +433,7 @@ function UI.create(configWidget, plugin, settings)
 	blacklistFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	blacklistFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
 	blacklistFrame.ScrollBarThickness = 6
-	blacklistFrame.Parent = mainFrame
+	blacklistFrame.Parent = blacklistSettingsFrame
 	local blacklistCorner = Instance.new("UICorner")
 	blacklistCorner.CornerRadius = UDim.new(0, 4)
 	blacklistCorner.Parent = blacklistFrame
@@ -390,6 +463,8 @@ function UI.create(configWidget, plugin, settings)
 		savedBlacklist["Position"] = true
 		savedBlacklist["Size"] = true
 	end
+
+	local groupDataStore = {}
 
 	local groupOrder = 0
 	local groupKeys = {}
@@ -437,10 +512,13 @@ function UI.create(configWidget, plugin, settings)
 		local isExpanded = true
 		header.MouseButton1Click:Connect(function()
 			isExpanded = not isExpanded
-			contentFrame.Visible = isExpanded
+			if header.Visible then
+				contentFrame.Visible = isExpanded
+			end
 			header.Text = (isExpanded and "  ▾ " or "  ▸ ") .. groupName
 		end)
 
+		local rowsInGroup = {}
 		local i = 0
 		for _, propName in ipairs(propsInGroup) do
 			i = i + 1
@@ -457,6 +535,7 @@ function UI.create(configWidget, plugin, settings)
 			row.TextColor3 = Color3.fromRGB(220, 220, 220)
 			row.TextXAlignment = Enum.TextXAlignment.Left
 			row.Parent = contentFrame
+			table.insert(rowsInGroup, row)
 
 			local isBlacklisted = savedBlacklist[propName] or false
 
@@ -494,10 +573,37 @@ function UI.create(configWidget, plugin, settings)
 			}
 			updateCheckboxVisuals()
 		end
+
+		groupDataStore[groupName] = {
+			header = header,
+			content = contentFrame,
+			rows = rowsInGroup,
+			isExpanded = function() return isExpanded end,
+		}
 	end
 
+	searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+		local searchText = searchBox.Text:lower()
+
+		for groupName, groupData in pairs(groupDataStore) do
+			local hasVisibleChildren = false
+			for _, row in ipairs(groupData.rows) do
+				local propName = row.Name:lower()
+				local isVisible = searchText == "" or propName:find(searchText, 1, true)
+				row.Visible = isVisible
+				if isVisible then
+					hasVisibleChildren = true
+				end
+			end
+
+			groupData.header.Visible = hasVisibleChildren
+			groupData.content.Visible = hasVisibleChildren and groupData.isExpanded()
+		end
+	end)
+
 	local previewHeaderFrame = Instance.new("Frame")
-	previewHeaderFrame.LayoutOrder = 15
+	previewHeaderFrame.LayoutOrder = currentLayoutOrder
+	currentLayoutOrder = currentLayoutOrder + 1
 	previewHeaderFrame.Size = UDim2.new(1, 0, 0, 15)
 	previewHeaderFrame.BackgroundTransparency = 1
 	previewHeaderFrame.Parent = mainFrame
@@ -514,7 +620,8 @@ function UI.create(configWidget, plugin, settings)
 	previewLabel.Parent = previewHeaderFrame
 
 	local previewFrame = Instance.new("ScrollingFrame")
-	previewFrame.LayoutOrder = 16
+	previewFrame.LayoutOrder = currentLayoutOrder
+	currentLayoutOrder = currentLayoutOrder + 1
 	previewFrame.Size = UDim2.new(1, 0, 0, 200) -- Tinggi tetap untuk area pratinjau
 	previewFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	previewFrame.BorderSizePixel = 1
@@ -552,7 +659,8 @@ function UI.create(configWidget, plugin, settings)
 
 	local convertButton = Instance.new("TextButton")
 	convertButton.Name = "ConvertButton"
-	convertButton.LayoutOrder = 17
+	convertButton.LayoutOrder = currentLayoutOrder
+	currentLayoutOrder = currentLayoutOrder + 1
 	convertButton.Text = "Convert"
 	convertButton.Size = UDim2.new(1, 0, 0, 32)
 	convertButton.BackgroundColor3 = Color3.fromRGB(80, 120, 200)
@@ -578,7 +686,8 @@ function UI.create(configWidget, plugin, settings)
 
 	local exampleCodeButton = Instance.new("TextButton")
 	exampleCodeButton.Name = "ExampleCodeButton"
-	exampleCodeButton.LayoutOrder = 18
+	exampleCodeButton.LayoutOrder = currentLayoutOrder
+	currentLayoutOrder = currentLayoutOrder + 1
 	exampleCodeButton.Text = "Get Example Code"
 	exampleCodeButton.Size = UDim2.new(1, 0, 0, 28)
 	exampleCodeButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
@@ -596,7 +705,8 @@ function UI.create(configWidget, plugin, settings)
 
 	local statusLabel = Instance.new("TextLabel")
 	statusLabel.Name = "StatusLabel"
-	statusLabel.LayoutOrder = 19
+	statusLabel.LayoutOrder = currentLayoutOrder
+	currentLayoutOrder = currentLayoutOrder + 1
 	statusLabel.Size = UDim2.new(1, 0, 0, 20)
 	statusLabel.Font = Enum.Font.SourceSans
 	statusLabel.Text = ""
@@ -628,7 +738,7 @@ function UI.create(configWidget, plugin, settings)
 		settings.deleteProfile(settings.getActiveProfile())
 	end)
 
-	local dropdownFrame = Instance.new("Frame")
+	local dropdownFrame = Instance.new("ScrollingFrame")
 	dropdownFrame.Name = "DropdownFrame"
 	dropdownFrame.Size = UDim2.new(1, 0, 0, 100)
 	dropdownFrame.Position = UDim2.new(0, 0, 0, 28)
@@ -636,6 +746,7 @@ function UI.create(configWidget, plugin, settings)
 	dropdownFrame.BorderSizePixel = 0
 	dropdownFrame.Visible = false
 	dropdownFrame.ZIndex = 2
+	dropdownFrame.ScrollBarThickness = 5
 	dropdownFrame.Parent = profileDropdown
 	local dropdownListLayout = Instance.new("UIListLayout")
 	dropdownListLayout.Parent = dropdownFrame

@@ -22,9 +22,11 @@ GUIConvert adalah sebuah plugin canggih untuk Roblox Studio yang dirancang untuk
   - **Sakelar Geser Kustom:** Opsi pengaturan sekarang menggunakan sakelar geser (toggle switches) yang jelas dan animasi.
   - **Hierarki Visual yang Jelas:** Tombol aksi utama didesain untuk menonjol, memandu pengguna melalui alur kerja.
   - **Desain Kohesif:** Semua elemen interaktif berbagi bahasa desain yang konsisten.
+    - **Pengaturan yang Terorganisir:** Semua opsi sekarang dikelompokkan ke dalam beberapa bagian yang dapat diciutkan (seperti "Pengaturan Umum" dan "Sinkronisasi Langsung"), membuat antarmuka lebih bersih dan lebih mudah dinavigasi.
   - **Manajemen Daftar Hitam yang Ditingkatkan:**
     - **Profil Daftar Hitam:** Simpan dan muat konfigurasi daftar hitam yang berbeda sebagai "profil". Ini memungkinkan Anda untuk dengan cepat beralih di antara set properti yang diabaikan untuk berbagai jenis UI tanpa harus mencentangnya secara manual setiap saat.
     - **Grup yang Dapat Diciutkan:** Properti dalam daftar hitam sekarang dikelompokkan berdasarkan kelas (`Common`, `UIStroke`, `UIGradient`, dll.) dalam kategori yang dapat diciutkan, membuat navigasi menjadi jauh lebih mudah.
+    - **Pencarian Properti Cepat:** Temukan properti spesifik dalam sekejap dengan menggunakan *search bar* baru yang terletak di atas daftar properti.
     - **Daftar Hitam Otomatis Cerdas:** Saat Anda memilih `UIListLayout` atau `UIGridLayout`, plugin secara otomatis memasukkan properti `Position` dan `Size` ke dalam daftar hitam untuk Anda.
     - **Interaktivitas Tinggi:** Baris properti memberikan umpan balik visual dengan menjadi lebih terang saat kursor diarahkan ke atasnya.
     - **Seleksi Massal:** Gunakan tombol "Tambah Semua" dan "Hapus Semua" untuk mengelola daftar hitam dengan cepat.
