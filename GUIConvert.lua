@@ -1,15 +1,26 @@
 -- GUI → LocalScript Plugin for Roblox Studio
 -- Bahasa: Indonesian
--- Usage: Select a ScreenGui (atau Frame/any GuiObject root) di Explorer, lalu klik toolbar "GUI Tools" -> "Convert GUI to LocalScript".
--- Plugin akan membuat sebuah LocalScript di StarterPlayer > StarterPlayerScripts bernama "GeneratedGui_<NamaGUI>".
--- LocalScript yang dihasilkan akan membuat ulang hirarki GUI dan menyet properti-properti umum.
--- Catatan: Event/Connections, Functions, dan beberapa property khusus tidak diserialisasi.
+-- Alur kerja utama dan skrip inisialisasi untuk plugin GUIConvert.
 
 local Selection = game:GetService("Selection")
 local StarterPlayer = game:GetService("StarterPlayer")
+local HttpService = game:GetService("HttpService")
 
+-- Muat modul dari direktori Lib
+local Utils = require(script.Lib.Utils)
+local TemplateFinder = require(script.Lib.TemplateFinder)
+local CodeGenerator = require(script.Lib.CodeGenerator)
+local SyntaxHighlighter = require(script.Lib.SyntaxHighlighter)
+local ScriptParser = require(script.Lib.ScriptParser)
+local UI = require(script.Lib.UI)
+
+-- Inisialisasi Plugin UI
 local toolbar = plugin:CreateToolbar("GUI Tools")
 local button = toolbar:CreateButton("Convert GUI to LocalScript", "Convert selected GUI into a LocalScript that recreates it", "rbxassetid://4458901886")
+local configWidget = plugin:CreateDockWidgetPluginGui("GUIConverterConfig", DockWidgetPluginGuiInfo.new(
+	Enum.InitialDockState.Float, true, false, 240, 480
+	))
+configWidget.Title = "GUI Converter"
 
 local contextualAction = plugin:CreatePluginAction(
 	"GUIConvert_ContextualConvert",
@@ -19,152 +30,438 @@ local contextualAction = plugin:CreatePluginAction(
 	false
 )
 
-local controls -- Dideklarasikan di sini untuk mengatasi dependensi sirkular
-
--- UI Konfigurasi untuk Plugin
-local configWidget = plugin:CreateDockWidgetPluginGui("GUIConverterConfig", DockWidgetPluginGuiInfo.new(
-	Enum.InitialDockState.Float, true, false, 240, 480 -- Ukuran diubah untuk daftar checkbox
-	))
-configWidget.Title = "GUI Converter"
-
--- Daftar properti GUI yang akan di-serialize
-local COMMON_PROPERTIES = {
-	"Name","AnchorPoint","AutomaticSize","Position","Rotation","Size","Visible","ZIndex","LayoutOrder",
-	"BackgroundColor3","BackgroundTransparency","BorderSizePixel","Image","ImageTransparency","ImageColor3","ScaleType","SliceCenter","SliceScale","ImageRectOffset","ImageRectSize","ClipsDescendants",
-	"Text","TextColor3","TextSize","TextScaled","Font","TextWrapped","TextXAlignment","TextYAlignment","TextTransparency","TextStrokeTransparency","TextStrokeColor3","PlaceholderText","PlaceholderColor3","TextEditable",
-	"AutoButtonColor","ResetOnSpawn","Selectable","Modal","Style"
-}
-
-local PROPERTIES_BY_CLASS = {
-	UICorner = {"CornerRadius"},
-	UIGradient = {"Color", "Enabled", "Offset", "Rotation", "Transparency"},
-	UIStroke = {"ApplyStrokeMode", "Color", "Enabled", "LineJoinMode", "Thickness", "Transparency"},
-	UIAspectRatioConstraint = {"AspectRatio", "AspectType", "DominantAxis"},
-	UIGridLayout = {"AbsoluteContentSize", "CellPadding", "CellSize", "FillDirection", "HorizontalAlignment", "SortOrder", "StartCorner", "VerticalAlignment"},
-	UIListLayout = {"AbsoluteContentSize", "FillDirection", "HorizontalAlignment", "Padding", "SortOrder", "VerticalAlignment"},
-	UIPadding = {"PaddingBottom", "PaddingLeft", "PaddingRight", "PaddingTop"},
-	UIScale = {"Scale"},
-	UISizeConstraint = {"MaxSize", "MinSize"},
-	UITextSizeConstraint = {"MaxTextSize", "MinTextSize"}
-}
-
--- Variabel untuk manajemen Live Sync
+-- Variabel global dan status
+local controls
 local syncingInstance = nil
 local syncingScript = nil
 local syncConnections = {}
 local debounceTimer = nil
 local lastSyncSettings = nil
+local previewDebounceTimer = nil
+local blacklistProfiles = {}
+local activeProfileName = "Default"
+local presets = {}
+local activePresetName = "Default"
+local projectDefaultPresets = {}
+local outputLocation = nil
+local copiedStyle = nil
 
-local function isGuiObject(inst)
-	return inst and inst:IsA("GuiObject")
-end
+-- Pre-declare functions for mutual recursion / ordering
+local reSync
+local showStatus 
+local connectInstance
+local disconnectInstance
+local saveBlacklistProfiles
+local applyBlacklistProfile
+local updateCodePreview
+local saveCurrentPreset
+local deleteCurrentPreset
+local applyPreset
 
-local function quoteString(s)
-	return string.format("%q", tostring(s))
-end
-
-local function roundDecimal(n)
-	if typeof(n) ~= "number" then return n end
-	return math.floor(n * 10000 + 0.5) / 10000
-end
-
-local function serializeValue(v)
-	local t = typeof(v)
-	if t == "UDim2" then
-		return string.format("UDim2.new(%s, %s, %s, %s)", tostring(roundDecimal(v.X.Scale)), tostring(v.X.Offset), tostring(roundDecimal(v.Y.Scale)), tostring(v.Y.Offset))
-	elseif t == "UDim" then
-		return string.format("UDim.new(%s, %s)", tostring(roundDecimal(v.Scale)), tostring(v.Offset))
-	elseif t == "Vector2" then
-		return string.format("Vector2.new(%s, %s)", tostring(roundDecimal(v.X)), tostring(roundDecimal(v.Y)))
-	elseif t == "Vector3" then
-		return string.format("Vector3.new(%s, %s, %s)", tostring(roundDecimal(v.X)), tostring(roundDecimal(v.Y)), tostring(roundDecimal(v.Z)))
-	elseif t == "Color3" then
-		local r = math.floor(v.R * 255 + 0.5)
-		local g = math.floor(v.G * 255 + 0.5)
-		local b = math.floor(v.B * 255 + 0.5)
-		return string.format("Color3.fromRGB(%d, %d, %d)", r, g, b)
-	elseif t == "ColorSequence" then
-		local keypoints = {}
-		for _, keypoint in ipairs(v.Keypoints) do
-			table.insert(keypoints, string.format("ColorSequenceKeypoint.new(%s, %s)", tostring(keypoint.Time), serializeValue(keypoint.Value)))
-		end
-		return string.format("ColorSequence.new({%s})", table.concat(keypoints, ", "))
-	elseif t == "NumberSequence" then
-		local keypoints = {}
-		for _, keypoint in ipairs(v.Keypoints) do
-			table.insert(keypoints, string.format("NumberSequenceKeypoint.new(%s, %s)", tostring(keypoint.Time), tostring(keypoint.Value)))
-		end
-		return string.format("NumberSequence.new({%s})", table.concat(keypoints, ", "))
-	elseif t == "EnumItem" then
-		return tostring(v)
-	elseif t == "boolean" then
-		return tostring(v)
-	elseif t == "number" then
-		return tostring(v)
-	elseif t == "string" then
-		return quoteString(v)
+-- Fungsi Manajemen Profil
+function saveBlacklistProfiles()
+	local success, encoded = pcall(HttpService.JSONEncode, HttpService, blacklistProfiles)
+	if success then
+		plugin:SetSetting("BlacklistProfiles", encoded)
 	else
-		return quoteString(tostring(v))
+		warn("[GUIConvert] Gagal menyimpan profil daftar hitam:", encoded)
 	end
 end
 
-local function generateSafeVarName(s)
-	if not s or s == "" then return "obj" end
-	local name = tostring(s):gsub("%s+(%w)", function(c) return c:upper() end):gsub("[^%w_]", "")
-	if name:match("^[0-9]") then name = "v" .. name end
-	if #name > 0 then name = name:sub(1,1):lower() .. name:sub(2) end
-	if name == "" then return "unnamedGui" end
-	return name
+local function loadBlacklistProfiles()
+	local saved = plugin:GetSetting("BlacklistProfiles")
+	if saved then
+		local success, decoded = pcall(HttpService.JSONDecode, HttpService, saved)
+		if success then
+			blacklistProfiles = decoded
+		else
+			warn("[GUIConvert] Gagal memuat profil daftar hitam:", decoded)
+			blacklistProfiles = {}
+		end
+	end
+	if not blacklistProfiles["Default"] then
+		blacklistProfiles["Default"] = { "Position", "Size" }
+	end
+	activeProfileName = plugin:GetSetting("ActiveProfile") or "Default"
 end
 
-local classDefaults = {}
-local function getClassDefaultValue(className, prop)
-	if classDefaults[className] == nil then
-		local ok, inst = pcall(function() return Instance.new(className) end)
-		classDefaults[className] = (ok and inst) and inst or false
+function applyBlacklistProfile(profileName)
+	activeProfileName = profileName
+	plugin:SetSetting("ActiveProfile", activeProfileName)
+	local profile = blacklistProfiles[activeProfileName] or {}
+
+	local profileSet = {}
+	for _, propName in ipairs(profile) do
+		profileSet[propName] = true
 	end
-	local inst = classDefaults[className]
-	if not inst then return nil, false end
-	local ok, val = pcall(function() return inst[prop] end)
-	if ok then return val, true end
-	return nil, false
+
+	for propName, checkboxData in pairs(controls.BlacklistCheckboxes) do
+		checkboxData.Toggle(profileSet[propName] == true)
+	end
+
+	controls.updateProfileList(blacklistProfiles, activeProfileName)
+	updateCodePreview()
 end
 
-local function getRelativePath(instance, root)
-	local path = {}
-	local current = instance
-	while current and current ~= root do
-		table.insert(path, 1, current.Name)
-		current = current.Parent
+local function saveCurrentProfile(profileName)
+	if not profileName or profileName == "" then
+		showStatus("✗ Nama profil tidak boleh kosong.", true)
+		return
 	end
-	if current == root then
-		table.insert(path, 1, root.Name)
-		return table.concat(path, ".")
+
+	local blacklistedProps = {}
+	for propName, checkboxData in pairs(controls.BlacklistCheckboxes) do
+		if checkboxData.IsBlacklisted() then
+			table.insert(blacklistedProps, propName)
+		end
+	end
+	table.sort(blacklistedProps)
+
+	blacklistProfiles[profileName] = blacklistedProps
+	saveBlacklistProfiles()
+	applyBlacklistProfile(profileName)
+	showStatus("✓ Profil '" .. profileName .. "' disimpan.", false)
+end
+
+local function deleteProfile(profileName)
+	if profileName == "Default" then
+		showStatus("✗ Profil 'Default' tidak dapat dihapus.", true)
+		return
+	end
+
+	if blacklistProfiles[profileName] then
+		blacklistProfiles[profileName] = nil
+		saveBlacklistProfiles()
+		applyBlacklistProfile("Default")
+		showStatus("✓ Profil '" .. profileName .. "' dihapus.", false)
 	else
-		return instance:GetFullName() -- Fallback
+		showStatus("✗ Profil '" .. profileName .. "' tidak ditemukan.", true)
 	end
 end
 
-local function valuesEqual(a, b)
-	if a == nil and b == nil then return true end
-	if a == nil or b == nil then return false end
-	local ta, tb = typeof(a), typeof(b)
-	if ta ~= tb then return false end
-	if ta == "UDim2" or ta == "UDim" or ta == "Vector2" or ta == "Vector3" or ta == "Color3" or ta == "EnumItem" or ta == "boolean" or ta == "number" or ta == "string" then
-		return a == b
+-- Fungsi Manajemen Preset
+local function savePresets()
+	local success, encoded = pcall(HttpService.JSONEncode, HttpService, presets)
+	if success then
+		plugin:SetSetting("ConfigurationPresets", encoded)
+	else
+		warn("[GUIConvert] Gagal menyimpan preset:", encoded)
 	end
-	return tostring(a) == tostring(b)
 end
 
--- Membuat elemen UI secara terprogram
+local function loadPresets()
+	local saved = plugin:GetSetting("ConfigurationPresets")
+	if saved then
+		local success, decoded = pcall(HttpService.JSONDecode, HttpService, saved)
+		if success then
+			presets = decoded
+		else
+			warn("[GUIConvert] Gagal memuat preset:", decoded)
+			presets = {}
+		end
+	end
+	if not presets["Default"] then
+		presets["Default"] = {
+			ScriptType = "ModuleScript",
+			AddTraceComments = true,
+			OverwriteExisting = true,
+			LiveSyncEnabled = false,
+			AutoOpen = false,
+			ActiveProfileName = "Default",
+		}
+	end
+	activePresetName = plugin:GetSetting("ActivePreset") or "Default"
+end
+
+function applyPreset(presetName)
+	local preset = presets[presetName]
+	if not preset then
+		warn("[GUIConvert] Mencoba menerapkan preset yang tidak ada:", presetName)
+		return
+	end
+
+	activePresetName = presetName
+	plugin:SetSetting("ActivePreset", activePresetName)
+
+	-- Terapkan pengaturan ke kontrol
+	controls.ScriptTypeButton.Text = preset.ScriptType
+	controls.SetCommentsEnabled(preset.AddTraceComments)
+	controls.SetOverwriteEnabled(preset.OverwriteExisting)
+	controls.SetLiveSyncEnabled(preset.LiveSyncEnabled)
+	controls.SetAutoOpenEnabled(preset.AutoOpen)
+
+	if blacklistProfiles[preset.ActiveProfileName] then
+		applyBlacklistProfile(preset.ActiveProfileName)
+	else
+		showStatus("✗ Profil blacklist '" .. preset.ActiveProfileName .. "' tidak ditemukan. Kembali ke Default.", true)
+		applyBlacklistProfile("Default")
+	end
+
+	controls.ActivePresetLabel.Text = "Preset Aktif: " .. activePresetName
+	updateCodePreview()
+end
+
+function saveCurrentPreset(presetName)
+	if not presetName or presetName == "" then
+		showStatus("✗ Nama preset tidak boleh kosong.", true)
+		return
+	end
+
+	presets[presetName] = {
+		ScriptType = controls.ScriptTypeButton.Text,
+		AddTraceComments = controls.IsCommentsEnabled(),
+		OverwriteExisting = controls.IsOverwriteEnabled(),
+		LiveSyncEnabled = controls.IsLiveSyncEnabled(),
+		AutoOpen = controls.IsAutoOpenEnabled(),
+		ActiveProfileName = activeProfileName,
+	}
+
+	savePresets()
+	applyPreset(presetName) -- Terapkan untuk konsistensi UI
+	showStatus("✓ Preset '" .. presetName .. "' disimpan.", false)
+end
+
+function deletePreset(presetName)
+	if presetName == "Default" then
+		showStatus("✗ Preset 'Default' tidak dapat dihapus.", true)
+		return
+	end
+
+	-- Hapus juga dari default proyek jika ada
+	for placeId, name in pairs(projectDefaultPresets) do
+		if name == presetName then
+			projectDefaultPresets[placeId] = nil
+		end
+	end
+	saveProjectDefaultPresets() -- Simpan perubahan pada default
+
+	if presets[presetName] then
+		local deletedName = presetName
+		presets[presetName] = nil
+		savePresets()
+		if activePresetName == deletedName then
+			applyPreset("Default")
+		end
+		updateLoadPresetModal() -- Perbarui modal setelah menghapus
+		showStatus("✓ Preset '" .. deletedName .. "' dihapus.", false)
+	else
+		showStatus("✗ Preset '" .. presetName .. "' tidak ditemukan.", true)
+	end
+end
+
+local function saveProjectDefaultPresets()
+	local success, encoded = pcall(HttpService.JSONEncode, HttpService, projectDefaultPresets)
+	if success then
+		plugin:SetSetting("ProjectDefaultPresets", encoded)
+	else
+		warn("[GUIConvert] Gagal menyimpan preset default proyek:", encoded)
+	end
+end
+
+local function loadProjectDefaultPresets()
+	local saved = plugin:GetSetting("ProjectDefaultPresets")
+	if saved and saved ~= "" then
+		local success, decoded = pcall(HttpService.JSONDecode, HttpService, saved)
+		if success and type(decoded) == "table" then
+			projectDefaultPresets = decoded
+		else
+			warn("[GUIConvert] Gagal memuat preset default proyek:", decoded)
+			projectDefaultPresets = {}
+		end
+	end
+end
+
+local function applyProjectDefaultPreset()
+	if game.PlaceId == 0 then return end -- Bukan proyek yang disimpan
+
+	local placeIdStr = tostring(game.PlaceId)
+	local defaultPresetName = projectDefaultPresets[placeIdStr]
+
+	if defaultPresetName and presets[defaultPresetName] then
+		applyPreset(defaultPresetName)
+		showStatus(string.format("i Preset default '%s' untuk proyek ini dimuat.", defaultPresetName), false)
+	end
+end
+
+local function updateLoadPresetModal()
+	local listFrame = controls.LoadPresetListFrame
+	for _, child in ipairs(listFrame:GetChildren()) do
+		if child:IsA("GuiObject") and not child:IsA("UIListLayout") and not child:IsA("UICorner") and child.Name ~= "NoPresetsLabel" then
+			child:Destroy()
+		end
+	end
+
+	local presetNames = {}
+	for name in pairs(presets) do
+		table.insert(presetNames, name)
+	end
+	table.sort(presetNames)
+
+	if #presetNames == 0 then
+		controls.NoPresetsLabel.Visible = true
+		return
+	end
+	controls.NoPresetsLabel.Visible = false
+
+	for _, name in ipairs(presetNames) do
+		local row = Instance.new("Frame")
+		row.Name = name .. "_Row"
+		row.Size = UDim2.new(1, 0, 0, 30)
+		row.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+		row.BackgroundTransparency = (name == activePresetName) and 0.5 or 1
+		row.Parent = listFrame
+		local rowCorner = Instance.new("UICorner")
+		rowCorner.CornerRadius = UDim.new(0, 4)
+		rowCorner.Parent = row
+
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.Size = UDim2.new(1, -180, 1, 0) -- Beri lebih banyak ruang untuk tombol
+		nameLabel.Text = "  " .. name
+		nameLabel.Font = (name == activePresetName) and Enum.Font.SourceSansBold or Enum.Font.SourceSans
+		nameLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+		nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.Parent = row
+
+		local buttonFrame = Instance.new("Frame")
+		buttonFrame.Size = UDim2.new(0, 170, 1, 0)
+		buttonFrame.Position = UDim2.new(1, -170, 0, 0)
+		buttonFrame.BackgroundTransparency = 1
+		buttonFrame.Parent = row
+		local buttonLayout = Instance.new("UIListLayout")
+		buttonLayout.FillDirection = Enum.FillDirection.Horizontal
+		buttonLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+		buttonLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+		buttonLayout.Padding = UDim.new(0, 5)
+		buttonLayout.Parent = buttonFrame
+
+		local loadButton = Instance.new("TextButton")
+		loadButton.Name = "LoadButton"
+		loadButton.Size = UDim2.new(0, 50, 0, 22)
+		loadButton.Text = "Muat"
+		loadButton.BackgroundColor3 = Color3.fromRGB(80, 120, 200)
+		loadButton.Font = Enum.Font.SourceSansBold
+		loadButton.TextSize = 13
+		loadButton.Parent = buttonFrame
+		local loadCorner = Instance.new("UICorner")
+		loadCorner.CornerRadius = UDim.new(0, 3)
+		loadCorner.Parent = loadButton
+
+		loadButton.MouseButton1Click:Connect(function()
+			applyPreset(name)
+			controls.LoadPresetModal.Visible = false
+		end)
+
+		local setDefaultButton = Instance.new("TextButton")
+		setDefaultButton.Name = "SetDefaultButton"
+		setDefaultButton.Size = UDim2.new(0, 80, 0, 22)
+		setDefaultButton.Font = Enum.Font.SourceSansBold
+		setDefaultButton.TextSize = 13
+		setDefaultButton.Parent = buttonFrame
+		local setDefaultCorner = Instance.new("UICorner")
+		setDefaultCorner.CornerRadius = UDim.new(0, 3)
+		setDefaultCorner.Parent = setDefaultButton
+
+		if name ~= "Default" then
+			local deleteButton = Instance.new("TextButton")
+			deleteButton.Name = "DeleteButton"
+			deleteButton.Size = UDim2.new(0, 50, 0, 22)
+			deleteButton.Text = "Hapus"
+			deleteButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
+			deleteButton.Font = Enum.Font.SourceSansBold
+			deleteButton.TextSize = 13
+			deleteButton.Parent = buttonFrame
+			local deleteCorner = Instance.new("UICorner")
+			deleteCorner.CornerRadius = UDim.new(0, 3)
+			deleteCorner.Parent = deleteButton
+
+			deleteButton.MouseButton1Click:Connect(function()
+				deletePreset(name)
+			end)
+		end
+
+		local placeIdStr = tostring(game.PlaceId)
+		local isProjectDefault = (projectDefaultPresets[placeIdStr] == name)
+
+		if isProjectDefault then
+			setDefaultButton.Text = "Default"
+			setDefaultButton.BackgroundColor3 = Color3.fromRGB(70, 150, 70)
+		else
+			setDefaultButton.Text = "Set Default"
+			setDefaultButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+		end
+
+		setDefaultButton.MouseButton1Click:Connect(function()
+			if game.PlaceId == 0 then
+				showStatus("✗ Simpan proyek ini terlebih dahulu untuk mengatur default.", true)
+				return
+			end
+
+			if isProjectDefault then
+				-- Jika sudah default, klik lagi akan menghapusnya
+				projectDefaultPresets[placeIdStr] = nil
+			else
+				projectDefaultPresets[placeIdStr] = name
+			end
+
+			saveProjectDefaultPresets()
+			updateLoadPresetModal() -- Perbarui UI untuk merefleksikan perubahan
+		end)
+	end
+end
+
+function deleteCurrentPreset()
+	if activePresetName == "Default" then
+		showStatus("✗ Preset 'Default' tidak dapat dihapus.", true)
+		return
+	end
+
+	if presets[activePresetName] then
+		local deletedName = activePresetName
+		presets[activePresetName] = nil
+		savePresets()
+		applyPreset("Default")
+		showStatus("✓ Preset '" .. deletedName .. "' dihapus.", false)
+	else
+		showStatus("✗ Preset '" .. activePresetName .. "' tidak ditemukan.", true)
+	end
+end
+
+-- Daftar properti yang akan diserialisasi
+local COMMON_PROPERTIES = {
+	"Name","AnchorPoint","AutomaticSize","Position","Rotation","Size","Visible","ZIndex","LayoutOrder", "Active", "SizeConstraint",
+	"BackgroundColor3","BackgroundTransparency","BorderSizePixel", "BorderColor3", "BorderMode",
+	"Image","ImageTransparency","ImageColor3","ScaleType","SliceCenter","SliceScale","ImageRectOffset","ImageRectSize","ClipsDescendants", "TileSize", "ResampleMode",
+	"Text","TextColor3","TextSize","TextScaled","Font","TextWrapped","TextXAlignment","TextYAlignment","TextTransparency","TextStrokeTransparency","TextStrokeColor3","PlaceholderText","PlaceholderColor3","TextEditable", "FontFace", "LineHeight", "RichText", "TextDirection", "TextTruncate",
+	"AutoButtonColor","ResetOnSpawn","Selectable","Modal","Style"
+}
+local PROPERTIES_BY_CLASS = {
+	UICorner = {"CornerRadius"},
+	UIGradient = {"Color", "Enabled", "Offset", "Rotation", "Transparency"},
+	UIStroke = {"ApplyStrokeMode", "Color", "Enabled", "LineJoinMode", "Thickness", "Transparency", "BorderOffset", "BorderStrokePosition", "StrokeSizingMode", "ZIndex"},
+	UIAspectRatioConstraint = {"AspectRatio", "AspectType", "DominantAxis"},
+	UIGridLayout = {"AbsoluteContentSize", "CellPadding", "CellSize", "FillDirection", "HorizontalAlignment", "SortOrder", "StartCorner", "VerticalAlignment"},
+	UIListLayout = {"AbsoluteContentSize", "FillDirection", "HorizontalAlignment", "Padding", "SortOrder", "VerticalAlignment", "HorizontalFlex", "VerticalFlex"},
+	UIPadding = {"PaddingBottom", "PaddingLeft", "PaddingRight", "PaddingTop"},
+	UIScale = {"Scale"},
+	UISizeConstraint = {"MaxSize", "MinSize"},
+	UITextSizeConstraint = {"MaxTextSize", "MinTextSize"},
+	SurfaceGui = {"Adornee", "Face", "SizingMode", "CanvasSize", "PixelsPerStud", "LightInfluence", "AlwaysOnTop"}
+}
+
+-- Definisi Fungsi Inti
 
 local function stopSyncing()
 	if not syncingInstance then return end
-
 	print("[GUIConvert] Menghentikan sinkronisasi untuk " .. syncingInstance:GetFullName())
-	for _, connection in ipairs(syncConnections) do
-		connection:Disconnect()
+
+	-- Putuskan semua koneksi yang tersimpan
+	for inst, connections in pairs(syncConnections) do
+		for _, connection in ipairs(connections) do
+			connection:Disconnect()
+		end
 	end
+
 	syncConnections = {}
 	syncingInstance = nil
 	syncingScript = nil
@@ -178,711 +475,8 @@ local function stopSyncing()
 	end
 end
 
-local function reSync()
-	if not syncingInstance or not syncingScript or not lastSyncSettings then return end
-
-	-- Batalkan timer sebelumnya untuk debounce
-	if debounceTimer then
-		task.cancel(debounceTimer)
-	end
-	
-	controls.StatusLabel.Text = "Status: Mengetik..."
-	controls.StatusLabel.TextColor3 = Color3.fromRGB(255, 200, 120)
-	controls.StatusLabel.Visible = true
-
-	debounceTimer = task.delay(0.5, function()
-		if not syncingInstance or not syncingInstance.Parent then
-			stopSyncing()
-			return
-		end
-
-		local currentUserCode = extractUserCode(syncingScript.Source)
-
-		local success, generated = pcall(function() return generateLuaForGui(syncingInstance, lastSyncSettings) end)
-		if success then
-			if currentUserCode then
-				local startMarker = "--// USER_CODE_START"
-				local endMarker = "--// USER_CODE_END"
-				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. currentUserCode .. endMarker, 1)
-			end
-			syncingScript.Source = generated
-			controls.StatusLabel.Text = "Status: Tersinkronisasi"
-			controls.StatusLabel.TextColor3 = Color3.fromRGB(120, 255, 120)
-		else
-			warn("[GUIConvert] Gagal melakukan sinkronisasi ulang:", generated)
-			controls.StatusLabel.Text = "Status: Kesalahan Sinkronisasi!"
-			controls.StatusLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
-		end
-	end)
-end
-
-local function startSyncing(guiObject, script, settings)
-	stopSyncing() -- Selalu hentikan sesi sebelumnya
-
-	syncingInstance = guiObject
-	syncingScript = script
-	lastSyncSettings = settings
-	
-	local function connectInstance(inst)
-		local propsToWatch, propSet = {}, {}
-		if inst:IsA("GuiObject") then
-			for _, prop in ipairs(COMMON_PROPERTIES) do if not propSet[prop] then table.insert(propsToWatch, prop); propSet[prop] = true end end
-		end
-		local classSpecificProps = PROPERTIES_BY_CLASS[inst.ClassName]
-		if classSpecificProps then
-			for _, prop in ipairs(classSpecificProps) do if not propSet[prop] then table.insert(propsToWatch, prop); propSet[prop] = true end end
-		end
-
-		for _, prop in ipairs(propsToWatch) do
-			local success, signal = pcall(function()
-				return inst:GetPropertyChangedSignal(prop)
-			end)
-			if success and signal then
-				table.insert(syncConnections, signal:Connect(reSync))
-			end
-		end
-	end
-
-	-- Hubungkan ke semua instance yang ada
-	for _, inst in ipairs(guiObject:GetDescendants()) do
-		connectInstance(inst)
-	end
-	connectInstance(guiObject) -- Jangan lupa root objectnya
-
-	-- Hubungkan ke instance yang akan datang
-	table.insert(syncConnections, guiObject.DescendantAdded:Connect(function(descendant)
-		connectInstance(descendant)
-		reSync()
-	end))
-
-	-- Hubungkan ke instance yang dihapus
-	table.insert(syncConnections, guiObject.DescendantRemoving:Connect(reSync))
-
-	print("[GUIConvert] Memulai sinkronisasi untuk " .. guiObject:GetFullName())
-	controls.StatusLabel.Text = "Status: Sinkronisasi aktif"
-	controls.StatusLabel.TextColor3 = Color3.fromRGB(120, 255, 120)
-	controls.StatusLabel.Visible = true
-end
-
-local function createUI()
-	local mainFrame = Instance.new("Frame")
-	mainFrame.Size = UDim2.new(1, 0, 1, 0)
-	mainFrame.BackgroundColor3 = Color3.fromRGB(41, 42, 45)
-	mainFrame.BorderSizePixel = 0
-	mainFrame.Parent = configWidget
-
-	local listLayout = Instance.new("UIListLayout")
-	listLayout.Padding = UDim.new(0, 8)
-	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	listLayout.Parent = mainFrame
-
-	local padding = Instance.new("UIPadding")
-	padding.PaddingTop = UDim.new(0, 10)
-	padding.PaddingLeft = UDim.new(0, 10)
-	padding.PaddingRight = UDim.new(0, 10)
-	padding.Parent = mainFrame
-
-	local titleLabel = Instance.new("TextLabel")
-	titleLabel.LayoutOrder = 1
-	titleLabel.Text = "Conversion Settings"
-	titleLabel.Size = UDim2.new(1, 0, 0, 20)
-	titleLabel.Font = Enum.Font.SourceSansBold
-	titleLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
-	titleLabel.TextSize = 16
-	titleLabel.BackgroundTransparency = 1
-	titleLabel.Parent = mainFrame
-
-	local selectionLabel = Instance.new("TextLabel")
-	selectionLabel.Name = "SelectionLabel"
-	selectionLabel.LayoutOrder = 2
-	selectionLabel.Text = "Terpilih: Tidak ada"
-	selectionLabel.Size = UDim2.new(1, 0, 0, 18)
-	selectionLabel.Font = Enum.Font.SourceSansItalic
-	selectionLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-	selectionLabel.TextSize = 13
-	selectionLabel.BackgroundTransparency = 1
-	selectionLabel.TextXAlignment = Enum.TextXAlignment.Left
-	selectionLabel.Parent = mainFrame
-
-	local typeLabel = Instance.new("TextLabel")
-	typeLabel.LayoutOrder = 3
-	typeLabel.Text = "Output Script Type:"
-	typeLabel.Size = UDim2.new(1, 0, 0, 15)
-	typeLabel.Font = Enum.Font.SourceSans
-	typeLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-	typeLabel.TextSize = 14
-	typeLabel.TextXAlignment = Enum.TextXAlignment.Left
-	typeLabel.BackgroundTransparency = 1
-	typeLabel.Parent = mainFrame
-
-	local savedScriptType = plugin:GetSetting("ScriptType") or "ModuleScript"
-	local scriptTypes = {"ModuleScript", "LocalScript"}
-	local currentTypeIndex = table.find(scriptTypes, savedScriptType) or 1
-
-	local scriptTypeButton = Instance.new("TextButton")
-	scriptTypeButton.Name = "ScriptTypeButton"
-	scriptTypeButton.LayoutOrder = 4
-	scriptTypeButton.Text = savedScriptType
-	scriptTypeButton.Size = UDim2.new(1, 0, 0, 28)
-	scriptTypeButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-	scriptTypeButton.TextColor3 = Color3.fromRGB(220, 220, 220)
-	scriptTypeButton.Font = Enum.Font.SourceSans
-	scriptTypeButton.TextSize = 14
-	scriptTypeButton.Parent = mainFrame
-
-	local function updateScriptTypeButton()
-		if scriptTypeButton.Text == "ModuleScript" then
-			scriptTypeButton.BackgroundColor3 = Color3.fromRGB(120, 80, 180) -- Ungu
-		else
-			scriptTypeButton.BackgroundColor3 = Color3.fromRGB(80, 120, 200) -- Biru
-		end
-	end
-	updateScriptTypeButton()
-
-	local savedAddComments = plugin:GetSetting("AddTraceComments")
-	if savedAddComments == nil then savedAddComments = true end
-	local commentsEnabled = savedAddComments
-
-	local commentsButton = Instance.new("TextButton")
-	commentsButton.Name = "CommentsButton"
-	commentsButton.LayoutOrder = 5
-	commentsButton.Size = UDim2.new(1, 0, 0, 28)
-	commentsButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-	commentsButton.TextColor3 = Color3.fromRGB(220, 220, 220)
-	commentsButton.Font = Enum.Font.SourceSans
-	commentsButton.Text = "Trace Comments"
-	commentsButton.TextSize = 14
-	commentsButton.Parent = mainFrame
-
-	local function updateCommentsButton()
-		if commentsEnabled then
-			commentsButton.BackgroundColor3 = Color3.fromRGB(80, 160, 80) -- Hijau
-		else
-			commentsButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80) -- Merah
-		end
-	end
-	updateCommentsButton()
-
-	local savedOverwrite = plugin:GetSetting("OverwriteExisting")
-	if savedOverwrite == nil then savedOverwrite = true end
-	local overwriteEnabled = savedOverwrite
-
-	local overwriteButton = Instance.new("TextButton")
-	overwriteButton.Name = "OverwriteButton"
-	overwriteButton.LayoutOrder = 6
-	overwriteButton.Size = UDim2.new(1, 0, 0, 28)
-	overwriteButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-	overwriteButton.TextColor3 = Color3.fromRGB(220, 220, 220)
-	overwriteButton.Font = Enum.Font.SourceSans
-	overwriteButton.Text = "Overwrite Existing"
-	overwriteButton.TextSize = 14
-	overwriteButton.Parent = mainFrame
-
-	local function updateOverwriteButton()
-		if overwriteEnabled then
-			overwriteButton.BackgroundColor3 = Color3.fromRGB(80, 160, 80) -- Hijau
-		else
-			overwriteButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80) -- Merah
-		end
-	end
-	updateOverwriteButton()
-
-	local savedLiveSync = plugin:GetSetting("LiveSyncEnabled")
-	if savedLiveSync == nil then savedLiveSync = false end
-	local liveSyncEnabled = savedLiveSync
-
-	local liveSyncButton = Instance.new("TextButton")
-	liveSyncButton.Name = "LiveSyncButton"
-	liveSyncButton.LayoutOrder = 7
-	liveSyncButton.Size = UDim2.new(1, 0, 0, 28)
-	liveSyncButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-	liveSyncButton.TextColor3 = Color3.fromRGB(220, 220, 220)
-	liveSyncButton.Font = Enum.Font.SourceSans
-	liveSyncButton.Text = "Live Sync"
-	liveSyncButton.TextSize = 14
-	liveSyncButton.Parent = mainFrame
-
-	local function updateLiveSyncButton()
-		if liveSyncEnabled then
-			liveSyncButton.BackgroundColor3 = Color3.fromRGB(80, 160, 80) -- Hijau
-		else
-			liveSyncButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80) -- Merah
-		end
-	end
-	updateLiveSyncButton()
-
-	liveSyncButton.MouseButton1Click:Connect(function()
-		liveSyncEnabled = not liveSyncEnabled
-		updateLiveSyncButton()
-		if not liveSyncEnabled then
-			stopSyncing()
-		end
-	end)
-
-	local blacklistLabel = Instance.new("TextLabel")
-	blacklistLabel.LayoutOrder = 8
-	blacklistLabel.Text = "Property Blacklist:"
-	blacklistLabel.Size = UDim2.new(1, 0, 0, 15)
-	blacklistLabel.Font = Enum.Font.SourceSans
-	blacklistLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-	blacklistLabel.TextSize = 13
-	blacklistLabel.TextXAlignment = Enum.TextXAlignment.Left
-	blacklistLabel.BackgroundTransparency = 1
-	blacklistLabel.Parent = mainFrame
-	
-	local blacklistFrame = Instance.new("ScrollingFrame")
-	blacklistFrame.LayoutOrder = 9
-	blacklistFrame.Size = UDim2.new(1, 0, 1, -270)
-	blacklistFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-	blacklistFrame.BorderSizePixel = 1
-	blacklistFrame.BorderColor3 = Color3.fromRGB(50, 50, 50)
-	blacklistFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-	blacklistFrame.ScrollBarThickness = 6
-	blacklistFrame.Parent = mainFrame
-
-	local gridLayout = Instance.new("UIGridLayout")
-	gridLayout.CellSize = UDim2.new(0, 95, 0, 22)
-	gridLayout.CellPadding = UDim2.new(0, 4, 0, 4)
-	gridLayout.SortOrder = Enum.SortOrder.Name
-	gridLayout.Parent = blacklistFrame
-	
-	-- Buat dan isi checkbox blacklist
-	local blacklistCheckboxes = {}
-	local allProps = {}
-	local propSet = {}
-	for _, p in ipairs(COMMON_PROPERTIES) do if not propSet[p] then table.insert(allProps, p); propSet[p] = true end end
-	for _, classProps in pairs(PROPERTIES_BY_CLASS) do
-		for _, p in ipairs(classProps) do if not propSet[p] then table.insert(allProps, p); propSet[p] = true end end
-	end
-	table.sort(allProps)
-
-	local savedBlacklistStr = plugin:GetSetting("PropertyBlacklist") or "Position,Size"
-	local savedBlacklist = {}
-	for propName in string.gmatch(savedBlacklistStr, "[^,]+") do
-		savedBlacklist[propName:match("^%s*(.-)%s*$")] = true
-	end
-
-	for _, propName in ipairs(allProps) do
-		local checkbox = Instance.new("TextButton")
-		checkbox.Name = propName
-		checkbox.Text = propName
-		checkbox.Font = Enum.Font.SourceSans
-		checkbox.TextSize = 13
-		checkbox.TextColor3 = Color3.fromRGB(200, 200, 200)
-		checkbox.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
-		checkbox.Parent = blacklistFrame
-
-		local isBlacklisted = savedBlacklist[propName] or false
-		
-		local function updateCheckboxVisuals()
-			if isBlacklisted then
-				checkbox.BackgroundColor3 = Color3.fromRGB(180, 80, 80) -- Merah (di-blacklist)
-			else
-				checkbox.BackgroundColor3 = Color3.fromRGB(80, 80, 80) -- Abu-abu (tidak di-blacklist)
-			end
-		end
-		
-		checkbox.MouseButton1Click:Connect(function()
-			isBlacklisted = not isBlacklisted
-			updateCheckboxVisuals()
-		end)
-		
-		blacklistCheckboxes[propName] = {
-			IsBlacklisted = function() return isBlacklisted end,
-			Button = checkbox
-		}
-		updateCheckboxVisuals()
-	end
-
-	local convertButton = Instance.new("TextButton")
-	convertButton.Name = "ConvertButton"
-	convertButton.LayoutOrder = 10
-	convertButton.Text = "Convert"
-	convertButton.Size = UDim2.new(1, 0, 0, 32)
-	convertButton.BackgroundColor3 = Color3.fromRGB(80, 120, 200)
-	convertButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-	convertButton.Font = Enum.Font.SourceSansBold
-	convertButton.TextSize = 16
-	convertButton.Parent = mainFrame
-
-	local exampleCodeButton = Instance.new("TextButton")
-	exampleCodeButton.Name = "ExampleCodeButton"
-	exampleCodeButton.LayoutOrder = 11
-	exampleCodeButton.Text = "Get Example Code"
-	exampleCodeButton.Size = UDim2.new(1, 0, 0, 28)
-	exampleCodeButton.BackgroundColor3 = Color3.fromRGB(90, 90, 90)
-	exampleCodeButton.TextColor3 = Color3.fromRGB(220, 220, 220)
-	exampleCodeButton.Font = Enum.Font.SourceSans
-	exampleCodeButton.TextSize = 14
-	exampleCodeButton.Parent = mainFrame
-
-	local statusLabel = Instance.new("TextLabel")
-	statusLabel.Name = "StatusLabel"
-	statusLabel.LayoutOrder = 12
-	statusLabel.Size = UDim2.new(1, 0, 0, 20)
-	statusLabel.Font = Enum.Font.SourceSans
-	statusLabel.Text = ""
-	statusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-	statusLabel.TextSize = 14
-	statusLabel.BackgroundTransparency = 1
-	statusLabel.Visible = false
-	statusLabel.Parent = mainFrame
-
-	scriptTypeButton.MouseButton1Click:Connect(function()
-		currentTypeIndex = (currentTypeIndex % #scriptTypes) + 1
-		scriptTypeButton.Text = scriptTypes[currentTypeIndex]
-		updateScriptTypeButton()
-	end)
-
-	commentsButton.MouseButton1Click:Connect(function()
-		commentsEnabled = not commentsEnabled
-		updateCommentsButton()
-	end)
-
-	overwriteButton.MouseButton1Click:Connect(function()
-		overwriteEnabled = not overwriteEnabled
-		updateOverwriteButton()
-	end)
-
-	return {
-		SelectionLabel = selectionLabel,
-		ScriptTypeButton = scriptTypeButton,
-		BlacklistCheckboxes = blacklistCheckboxes,
-		IsCommentsEnabled = function() return commentsEnabled end,
-		IsOverwriteEnabled = function() return overwriteEnabled end,
-		IsLiveSyncEnabled = function() return liveSyncEnabled end,
-		ConvertButton = convertButton,
-		ExampleCodeButton = exampleCodeButton,
-		StatusLabel = statusLabel,
-	}
-end
-
-local function isGuiObject(inst)
-	return inst and inst:IsA("GuiObject")
-end
-
-local function quoteString(s)
-	return string.format("%q", tostring(s))
-end
-
-local function roundDecimal(n)
-	if typeof(n) ~= "number" then return n end
-	return math.floor(n * 10000 + 0.5) / 10000
-end
-
-local function serializeValue(v)
-	local t = typeof(v)
-	if t == "UDim2" then
-		return string.format("UDim2.new(%s, %s, %s, %s)", tostring(roundDecimal(v.X.Scale)), tostring(v.X.Offset), tostring(roundDecimal(v.Y.Scale)), tostring(v.Y.Offset))
-	elseif t == "UDim" then
-		return string.format("UDim.new(%s, %s)", tostring(roundDecimal(v.Scale)), tostring(v.Offset))
-	elseif t == "Vector2" then
-		return string.format("Vector2.new(%s, %s)", tostring(roundDecimal(v.X)), tostring(roundDecimal(v.Y)))
-	elseif t == "Vector3" then
-		return string.format("Vector3.new(%s, %s, %s)", tostring(roundDecimal(v.X)), tostring(roundDecimal(v.Y)), tostring(roundDecimal(v.Z)))
-	elseif t == "Color3" then
-		local r = math.floor(v.R * 255 + 0.5)
-		local g = math.floor(v.G * 255 + 0.5)
-		local b = math.floor(v.B * 255 + 0.5)
-		return string.format("Color3.fromRGB(%d, %d, %d)", r, g, b)
-	elseif t == "ColorSequence" then
-		local keypoints = {}
-		for _, keypoint in ipairs(v.Keypoints) do
-			table.insert(keypoints, string.format("ColorSequenceKeypoint.new(%s, %s)", tostring(keypoint.Time), serializeValue(keypoint.Value)))
-		end
-		return string.format("ColorSequence.new({%s})", table.concat(keypoints, ", "))
-	elseif t == "NumberSequence" then
-		local keypoints = {}
-		for _, keypoint in ipairs(v.Keypoints) do
-			table.insert(keypoints, string.format("NumberSequenceKeypoint.new(%s, %s)", tostring(keypoint.Time), tostring(keypoint.Value)))
-		end
-		return string.format("NumberSequence.new({%s})", table.concat(keypoints, ", "))
-	elseif t == "EnumItem" then
-		return tostring(v)
-	elseif t == "boolean" then
-		return tostring(v)
-	elseif t == "number" then
-		return tostring(v)
-	elseif t == "string" then
-		return quoteString(v)
-	else
-		return quoteString(tostring(v))
-	end
-end
-
-local function generateSafeVarName(s)
-	if not s or s == "" then return "obj" end
-	local name = tostring(s):gsub("%s+(%w)", function(c) return c:upper() end):gsub("[^%w_]", "")
-	if name:match("^[0-9]") then name = "v" .. name end
-	if #name > 0 then name = name:sub(1,1):lower() .. name:sub(2) end
-	if name == "" then return "unnamedGui" end
-	return name
-end
-
-local classDefaults = {}
-local function getClassDefaultValue(className, prop)
-	if classDefaults[className] == nil then
-		local ok, inst = pcall(function() return Instance.new(className) end)
-		classDefaults[className] = (ok and inst) and inst or false
-	end
-	local inst = classDefaults[className]
-	if not inst then return nil, false end
-	local ok, val = pcall(function() return inst[prop] end)
-	if ok then return val, true end
-	return nil, false
-end
-
-local function getRelativePath(instance, root)
-	local path = {}
-	local current = instance
-	while current and current ~= root do
-		table.insert(path, 1, current.Name)
-		current = current.Parent
-	end
-	if current == root then
-		table.insert(path, 1, root.Name)
-		return table.concat(path, ".")
-	else
-		return instance:GetFullName() -- Fallback
-	end
-end
-
-local function valuesEqual(a, b)
-	if a == nil and b == nil then return true end
-	if a == nil or b == nil then return false end
-	local ta, tb = typeof(a), typeof(b)
-	if ta ~= tb then return false end
-	if ta == "UDim2" or ta == "UDim" or ta == "Vector2" or ta == "Vector3" or ta == "Color3" or ta == "EnumItem" or ta == "boolean" or ta == "number" or ta == "string" then
-		return a == b
-	end
-	return tostring(a) == tostring(b)
-end
-
-local function collectGuiInstances(root)
-	local list = {}
-	local queue = {root}
-	while #queue > 0 do
-		local node = table.remove(queue, 1)
-
-		-- Periksa atribut ConvertIgnore. Jika true, lewati instance ini dan semua turunannya.
-		if node:GetAttribute("ConvertIgnore") == true then
-			continue
-		end
-
-		table.insert(list, node)
-		for _, child in ipairs(node:GetChildren()) do
-			if child:IsA("GuiBase") or child:IsA("UIBase") then
-				table.insert(queue, child)
-			end
-		end
-	end
-	return list
-end
-
 local function generateLuaForGui(root, settings)
-	settings = settings or {}
-
-	local blacklistStr = settings.PropertyBlacklist or ""
-	local blacklist = {}
-	for propName in string.gmatch(blacklistStr, "[^,]+") do
-		blacklist[propName:match("^%s*(.-)%s*$")] = true
-	end
-
-	local instances = collectGuiInstances(root)
-	local varMap = {}
-	local lines = {}
-	local rootVarName = ""
-
-	-- Buat Header Informasi
-	local classCounts = {}
-	for _, inst in ipairs(instances) do
-		classCounts[inst.ClassName] = (classCounts[inst.ClassName] or 0) + 1
-	end
-	local statsParts = {}
-	local sortedClasses = {}
-	for className in pairs(classCounts) do table.insert(sortedClasses, className) end
-	table.sort(sortedClasses)
-	for _, className in ipairs(sortedClasses) do
-		table.insert(statsParts, string.format("%s: %d", className, classCounts[className]))
-	end
-	local statsSummary = string.format("Total Instance: %d (%s)", #instances, table.concat(statsParts, ", "))
-
-	local header = {
-		string.format("\tSumber: %s", root:GetFullName()),
-		string.format("\tDibuat pada: %s", os.date("!%Y-%m-%d %H:%M:%S UTC")),
-		string.format("\t%s", statsSummary)
-	}
-	table.insert(lines, "--[[")
-	for _, headerLine in ipairs(header) do table.insert(lines, headerLine) end
-	table.insert(lines, "]]")
-	table.insert(lines, "")
-
-	local isModule = (settings.ScriptType == "ModuleScript")
-	local indent = isModule and "\t" or ""
-
-	if isModule then
-		table.insert(lines, "local module = {}")
-		table.insert(lines, "")
-		table.insert(lines, "function module.create(parent)")
-	else
-		table.insert(lines, "local Players = game:GetService('Players')")
-		table.insert(lines, "local player = Players.LocalPlayer")
-		table.insert(lines, "local playerGui = player:WaitForChild('PlayerGui')")
-		table.insert(lines, "")
-	end
-
-	local nameCounts = {}
-	for _, inst in ipairs(instances) do
-		-- Hasilkan nama variabel unik
-		local baseName = generateSafeVarName(inst.Name)
-		local varName = baseName
-		if nameCounts[baseName] then
-			nameCounts[baseName] = nameCounts[baseName] + 1
-			varName = baseName .. tostring(nameCounts[baseName])
-		else
-			nameCounts[baseName] = 1
-		end
-		varMap[inst] = varName
-		if inst == root then rootVarName = varName end
-
-		-- Buat instance
-		local line = string.format("%slocal %s = Instance.new(%s)", indent, varName, quoteString(inst.ClassName))
-		if settings.AddTraceComments then
-			line = line .. string.format(" -- Original: %s", getRelativePath(inst, root))
-		end
-		table.insert(lines, line)
-
-		-- Atur properti
-		table.insert(lines, string.format("%s%s.Name = %s", indent, varName, quoteString(inst.Name)))
-
-		local propsToProcess, propSet = {}, {}
-		if inst:IsA("GuiObject") then
-			for _, prop in ipairs(COMMON_PROPERTIES) do if not propSet[prop] then table.insert(propsToProcess, prop); propSet[prop] = true end end
-		end
-		local classSpecificProps = PROPERTIES_BY_CLASS[inst.ClassName]
-		if classSpecificProps then
-			for _, prop in ipairs(classSpecificProps) do if not propSet[prop] then table.insert(propsToProcess, prop); propSet[prop] = true end end
-		end
-
-		local propertyLines = {}
-		for _, prop in ipairs(propsToProcess) do
-			if prop ~= "Name" and not blacklist[prop] then
-				local ok, val = pcall(function() return inst[prop] end)
-				if ok and val ~= nil then
-					local defaultVal, _ = getClassDefaultValue(inst.ClassName, prop)
-					if not valuesEqual(val, defaultVal) and prop ~= "Parent" then
-						local success, serialized = pcall(function() return serializeValue(val) end)
-						if success and serialized then
-							table.insert(propertyLines, string.format("%s%s.%s = %s", indent, varName, prop, serialized))
-						end
-					end
-				end
-			end
-		end
-		table.sort(propertyLines)
-		for _, line in ipairs(propertyLines) do
-			table.insert(lines, line)
-		end
-		
-		-- Atur atribut
-		local attributes = inst:GetAttributes()
-		local attributeLines = {}
-		for name, value in pairs(attributes) do
-			local t = typeof(value)
-			if t == "Instance" or t == "RBXScriptSignal" or t == "function" or t == "thread" then
-				table.insert(attributeLines, string.format("%s-- Melewati atribut %s yang tidak didukung (tipe: %s)", indent, quoteString(name), t))
-			else
-				local success, serialized = pcall(function() return serializeValue(value) end)
-				if success and serialized then
-					table.insert(attributeLines, string.format('%s%s:SetAttribute(%s, %s)', indent, varName, quoteString(name), serialized))
-				else
-					table.insert(attributeLines, string.format("%s-- Gagal melakukan serialisasi atribut %s", indent, quoteString(name)))
-				end
-			end
-		end
-
-		if #attributeLines > 0 then
-			table.insert(lines, "")
-			table.insert(lines, string.format("%s-- Attributes", indent))
-			table.sort(attributeLines)
-			for _, attrLine in ipairs(attributeLines) do table.insert(lines, attrLine) end
-		end
-
-		-- Atur parent
-		if inst == root then
-			if isModule then
-				table.insert(lines, string.format("%s%s.Parent = parent", indent, varName))
-			else
-				table.insert(lines, string.format("%s%s.Parent = playerGui", indent, varName))
-			end
-		else
-			local parentVarName = varMap[inst.Parent]
-			if parentVarName then
-				table.insert(lines, string.format("%s%s.Parent = %s", indent, varName, parentVarName))
-			end
-		end
-		
-		table.insert(lines, "") -- Baris kosong antar instance
-	end
-	
-	-- Hapus baris kosong terakhir
-	if #lines > 0 and lines[#lines] == "" then
-		table.remove(lines)
-	end
-
-	if isModule then
-		table.insert(lines, indent .. "local elements = {")
-		for inst, varName in pairs(varMap) do
-			if inst:IsA("GuiObject") or inst:IsA("UIConstraint") then
-				table.insert(lines, string.format("%s\t%s = %s,", indent, varName, varName))
-			end
-		end
-		table.insert(lines, indent .. "}")
-		table.insert(lines, "")
-		table.insert(lines, indent .. "--// USER_CODE_START -- Letakkan kode kustom di bawah baris ini")
-		table.insert(lines, indent .. "--// USER_CODE_END -- Letakkan kode kustom di atas baris ini")
-		table.insert(lines, "")
-		table.insert(lines, string.format("%sreturn elements", indent))
-		table.insert(lines, "end")
-		table.insert(lines, "")
-		table.insert(lines, "return module")
-	else
-		table.insert(lines, "")
-		table.insert(lines, "--// USER_CODE_START -- Letakkan kode kustom di bawah baris ini")
-		table.insert(lines, "--// USER_CODE_END -- Letakkan kode kustom di atas baris ini")
-	end
-
-	return table.concat(lines, "\n")
-end
-
-function generateExampleCode(moduleScript)
-	local path = moduleScript:GetFullName()
-	-- Hapus awalan hingga dan termasuk "StarterPlayerScripts."
-	path = path:gsub("^.*StarterPlayerScripts%.", "") 
-
-	local moduleName = moduleScript.Name
-	local varName = generateSafeVarName(moduleName)
-
-	local lines = {
-		string.format("-- Contoh penggunaan untuk '%s'", moduleName),
-		"",
-		"local Players = game:GetService('Players')",
-		"",
-		string.format("-- Pastikan path ini benar! Mungkin perlu disesuaikan jika Anda memindahkan skrip."),
-		string.format("local %sModule = require(Players.LocalPlayer.PlayerScripts.%s)", varName, path),
-		"",
-		"local player = Players.LocalPlayer",
-		"local playerGui = player:WaitForChild('PlayerGui')",
-		"",
-		string.format("local guiElements = %sModule.create(playerGui)", varName),
-		"",
-		"-- Sekarang Anda dapat mengakses elemen UI:",
-		"-- guiElements.someButton.MouseButton1Click:Connect(function()",
-		"-- 	print('Tombol ditekan!')",
-		"-- end)"
-	}
-
-	return table.concat(lines, "\n")
+	return CodeGenerator.generate(root, settings, COMMON_PROPERTIES, PROPERTIES_BY_CLASS, Utils, TemplateFinder)
 end
 
 local function extractUserCode(source)
@@ -899,17 +493,120 @@ local function extractUserCode(source)
 	return nil
 end
 
-local function performConversion(settings)
-	local sel = Selection:Get()
-	if not sel or #sel == 0 then
-		return nil, "Pilih ScreenGui atau root GuiObject di Explorer."
+reSync = function()
+	if not syncingInstance or not syncingScript or not lastSyncSettings then return end
+	if debounceTimer then task.cancel(debounceTimer) end
+
+	controls.StatusLabel.Text = "Status: Mengetik..."
+	controls.StatusLabel.TextColor3 = Color3.fromRGB(255, 200, 120)
+	controls.StatusLabel.Visible = true
+
+	debounceTimer = task.delay(0.5, function()
+		if not syncingInstance or not syncingInstance.Parent then
+			stopSyncing()
+			return
+		end
+
+		local currentUserCode = extractUserCode(syncingScript.Source)
+		local success, generated = pcall(generateLuaForGui, syncingInstance, lastSyncSettings)
+
+		if success then
+			if currentUserCode then
+				local startMarker = "--// USER_CODE_START"
+				local endMarker = "--// USER_CODE_END"
+				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. currentUserCode .. endMarker, 1)
+			end
+			syncingScript.Source = generated
+			if lastSyncSettings.AutoOpen then
+				plugin:OpenScript(syncingScript) -- Paksa editor untuk memuat ulang
+			end
+			controls.StatusLabel.Text = string.format("Status: Tersinkronisasi @ %s", os.date("%H:%M:%S"))
+			controls.StatusLabel.TextColor3 = Color3.fromRGB(120, 255, 120)
+		else
+			warn("[GUIConvert] Gagal melakukan sinkronisasi ulang:", generated)
+			controls.StatusLabel.Text = "Status: Kesalahan Sinkronisasi!"
+			controls.StatusLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
+		end
+		debounceTimer = nil
+	end)
+end
+
+disconnectInstance = function(inst)
+	if syncConnections[inst] then
+		for _, connection in ipairs(syncConnections[inst]) do
+			connection:Disconnect()
+		end
+		syncConnections[inst] = nil
 	end
-	local root = sel[1]
-	if not isGuiObject(root) and not root:IsA("ScreenGui") then
-		return nil, "Objek terpilih bukan GuiObject/ScreenGui."
+end
+
+connectInstance = function(inst)
+	if syncConnections[inst] then return end -- Sudah terhubung
+
+	local propsToWatch, propSet = {}, {}
+	if inst:IsA("GuiObject") then
+		for _, prop in ipairs(COMMON_PROPERTIES) do if not propSet[prop] then table.insert(propsToWatch, prop); propSet[prop] = true end end
+	end
+	local classSpecificProps = PROPERTIES_BY_CLASS[inst.ClassName]
+	if classSpecificProps then
+		for _, prop in ipairs(classSpecificProps) do if not propSet[prop] then table.insert(propsToWatch, prop); propSet[prop] = true end end
 	end
 
-	local success, generated = pcall(function() return generateLuaForGui(root, settings) end)
+	syncConnections[inst] = {}
+
+	for _, prop in ipairs(propsToWatch) do
+		local success, signal = pcall(function()
+			return inst:GetPropertyChangedSignal(prop)
+		end)
+		if success and signal then
+			table.insert(syncConnections[inst], signal:Connect(reSync))
+		end
+	end
+
+	-- Tambahkan listener untuk perubahan atribut
+	table.insert(syncConnections[inst], inst.AttributeChanged:Connect(function(attributeName)
+		reSync()
+	end))
+
+	-- Tambahkan listener untuk perubahan hierarki
+	table.insert(syncConnections[inst], inst.ChildAdded:Connect(function(child)
+		connectInstance(child) -- Pastikan turunan baru juga diamati
+		reSync()
+	end))
+	table.insert(syncConnections[inst], inst.ChildRemoved:Connect(function(child)
+		disconnectInstance(child) -- Hentikan pengamatan pada turunan yang dihapus
+		reSync()
+	end))
+end
+
+local function startSyncing(guiObject, script, settings)
+	stopSyncing()
+	syncingInstance = guiObject
+	syncingScript = script
+	lastSyncSettings = settings
+
+	-- Hubungkan instance root dan semua turunannya
+	connectInstance(guiObject)
+	for _, inst in ipairs(guiObject:GetDescendants()) do
+		connectInstance(inst)
+	end
+
+	-- Buat koneksi level-root untuk penghancuran
+	syncConnections[guiObject] = syncConnections[guiObject] or {}
+	table.insert(syncConnections[guiObject], guiObject.Destroying:Connect(stopSyncing))
+
+	print("[GUIConvert] Memulai sinkronisasi untuk " .. guiObject:GetFullName())
+	controls.StatusLabel.Text = "Status: Sinkronisasi aktif"
+	controls.StatusLabel.TextColor3 = Color3.fromRGB(120, 255, 120)
+	controls.StatusLabel.Visible = true
+end
+
+local function performConversion(root, settings)
+	if not root or (not Utils.isGuiObject(root) and not root:IsA("ScreenGui")) then
+		return nil, "Objek terpilih bukan GuiObject/ScreenGui yang valid."
+	end
+
+	local success, generated = pcall(generateLuaForGui, root, settings)
 	if not success then
 		warn("Kesalahan pembuatan kode:", generated)
 		return nil, "Gagal menghasilkan kode. Periksa Output untuk detail."
@@ -919,18 +616,28 @@ local function performConversion(settings)
 end
 
 local function createFile(generated, rootName, settings)
-	local starterScripts = StarterPlayer:FindFirstChild("StarterPlayerScripts") or Instance.new("Folder", StarterPlayer)
-	starterScripts.Name = "StarterPlayerScripts"
-
-	local scriptInstance, folderName
+	local scriptInstance
 	if settings.ScriptType == "ModuleScript" then
-		scriptInstance, folderName = Instance.new("ModuleScript"), "GeneratedGuis"
+		scriptInstance = Instance.new("ModuleScript")
 	else
-		scriptInstance, folderName = Instance.new("LocalScript"), "GeneratedLocalGuis"
+		scriptInstance = Instance.new("LocalScript")
 	end
 
-	local targetFolder = starterScripts:FindFirstChild(folderName) or Instance.new("Folder", starterScripts)
-	targetFolder.Name = folderName
+	local targetFolder = outputLocation
+	if not targetFolder or not targetFolder.Parent then
+		local parentService
+		local folderName
+		if settings.ScriptType == "ModuleScript" then
+			parentService = game:GetService("ReplicatedStorage")
+			folderName = "GeneratedGuis"
+		else
+			parentService = StarterPlayer:FindFirstChild("StarterPlayerScripts") or Instance.new("Folder", StarterPlayer)
+			parentService.Name = "StarterPlayerScripts"
+			folderName = "GeneratedLocalGuis"
+		end
+		targetFolder = parentService:FindFirstChild(folderName) or Instance.new("Folder", parentService)
+		targetFolder.Name = folderName
+	end
 
 	local nameSafe = rootName:gsub("%W", "")
 	if nameSafe == "" then nameSafe = "GeneratedGui" end
@@ -946,89 +653,209 @@ local function createFile(generated, rootName, settings)
 				generated = generated:gsub(startMarker..".-"..endMarker, startMarker .. userCode .. endMarker, 1)
 			end
 			existing.Source = generated
+			plugin:OpenScript(existing)
 			return string.format("%s '%s' berhasil diperbarui.", settings.ScriptType, existing.Name), existing
 		end
 	end
 
 	scriptInstance.Source = generated
 	scriptInstance.Parent = targetFolder
+	plugin:OpenScript(scriptInstance)
 
 	return string.format("%s '%s' berhasil dibuat.", settings.ScriptType, scriptInstance.Name), scriptInstance
 end
 
+updateCodePreview = function()
+	if previewDebounceTimer then
+		task.cancel(previewDebounceTimer)
+	end
+
+	previewDebounceTimer = task.delay(0.2, function()
+		local blacklistedProps = {}
+		for propName, checkboxData in pairs(controls.BlacklistCheckboxes) do
+			if checkboxData.IsBlacklisted() then
+				table.insert(blacklistedProps, propName)
+			end
+		end
+		table.sort(blacklistedProps)
+		local blacklistJson = HttpService:JSONEncode(blacklistedProps)
+
+		local classBlacklist = {}
+		for className, checkboxData in pairs(controls.ClassBlacklistCheckboxes) do
+			if checkboxData.IsBlacklisted() then
+				table.insert(classBlacklist, className)
+			end
+		end
+		table.sort(classBlacklist)
+
+		local settings = {
+			ScriptType = controls.ScriptTypeButton.Text,
+			AddTraceComments = controls.IsCommentsEnabled(),
+			OverwriteExisting = controls.IsOverwriteEnabled(),
+			PropertyBlacklist = blacklistJson,
+			ClassBlacklist = classBlacklist,
+			LiveSyncEnabled = controls.IsLiveSyncEnabled(),
+			AutoOpen = controls.IsAutoOpenEnabled()
+		}
+
+		if lastSyncSettings then
+			lastSyncSettings = settings
+		end
+
+		local sel = Selection:Get()
+		if not sel or #sel == 0 then
+			controls.CodePreviewLabel.Text = "-- Pilih objek GUI untuk melihat pratinjau kode..."
+			return
+		end
+		local root = sel[1]
+		if not Utils.isGuiObject(root) and not root:IsA("ScreenGui") then
+			controls.CodePreviewLabel.Text = "-- Objek yang dipilih bukan GuiObject/ScreenGui yang valid."
+			return
+		end
+
+		local success, generated = pcall(generateLuaForGui, root, settings)
+
+		if success then
+			local ok, highlighted = pcall(SyntaxHighlighter.highlight, generated)
+			if ok then
+				controls.CodePreviewLabel.Text = highlighted
+			else
+				warn("[GUIConvert] Syntax highlighting failed:", highlighted)
+				controls.CodePreviewLabel.Text = generated -- Fallback to plain text
+			end
+		else
+			controls.CodePreviewLabel.Text = "-- Terjadi kesalahan saat membuat pratinjau kode:\n" .. tostring(generated)
+		end
+	end)
+end
+
+
 local function handleContextualConversion(selection)
-	-- Muat pengaturan dari penyimpanan, dengan nilai default
+	local classBlacklist = {}
+	for className, checkboxData in pairs(controls.ClassBlacklistCheckboxes) do
+		if checkboxData.IsBlacklisted() then
+			table.insert(classBlacklist, className)
+		end
+	end
+
 	local settings = {
 		ScriptType = plugin:GetSetting("ScriptType") or "ModuleScript",
-		AddTraceComments = plugin:GetSetting("AddTraceComments") ~= false, -- Default to true
-		OverwriteExisting = plugin:GetSetting("OverwriteExisting") ~= false, -- Default to true
-		PropertyBlacklist = plugin:GetSetting("PropertyBlacklist") or "Position,Size",
+		AddTraceComments = plugin:GetSetting("AddTraceComments") ~= false,
+		OverwriteExisting = plugin:GetSetting("OverwriteExisting") ~= false,
+		PropertyBlacklist = plugin:GetSetting("PropertyBlacklist") or HttpService:JSONEncode({"Position", "Size"}),
+		ClassBlacklist = classBlacklist,
+		AutoOpen = plugin:GetSetting("AutoOpen") ~= false
 	}
 
-	-- Lakukan konversi
-	local root = selection[1]
-	if not root then
-		warn("[GUIConvert] No object selected for contextual conversion.")
+	if not selection or #selection == 0 then
+		showStatus("✗ Tidak ada objek yang dipilih untuk konversi.", true)
 		return
 	end
 
-	if not (isGuiObject(root) or root:IsA("ScreenGui")) then
-		warn("[GUIConvert] Selected object is not a valid GUI for contextual conversion.")
-		return
-	end
+	local successCount = 0
+	local failCount = 0
 
-	-- Karena performConversion mengakses 'controls' secara global, kita tidak bisa memanggilnya secara langsung.
-	-- Kita panggil bagian intinya.
-	local success, generated = pcall(function() return generateLuaForGui(root, settings) end)
-	if not success then
-		warn("[GUIConvert] Gagal menghasilkan kode:", generated)
-		return
-	end
-
-	local resultName = root.Name
-	local successMsg = createFile(generated, resultName, settings)
-	print("[GUIConvert] " .. successMsg)
-end
-
-contextualAction.Triggered:Connect(handleContextualConversion)
-
-controls = createUI()
-
--- Hubungkan Logika
-local function updateSelectionDisplay()
-	local sel = Selection:Get()
-	if sel and #sel > 0 then
-		local obj = sel[1]
-		if isGuiObject(obj) or obj:IsA("ScreenGui") then
-			controls.SelectionLabel.Text = string.format("Terpilih: %s (%s)", obj.Name, obj.ClassName)
-			controls.SelectionLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
+	for _, rootObject in ipairs(selection) do
+		local generated, err = performConversion(rootObject, settings)
+		if generated then
+			createFile(generated, rootObject.Name, settings)
+			successCount = successCount + 1
 		else
-			controls.SelectionLabel.Text = "Terpilih: Objek tidak valid"
-			controls.SelectionLabel.TextColor3 = Color3.fromRGB(255, 180, 180)
+			warn(string.format("[GUIConvert] Gagal mengonversi %s: %s", rootObject:GetFullName(), tostring(err)))
+			failCount = failCount + 1
 		end
+	end
+
+	if successCount > 0 then
+		local summary = string.format("✓ Berhasil mengonversi %d GUI.", successCount)
+		if failCount > 0 then
+			summary = summary .. string.format(" (%d gagal)", failCount)
+		end
+		showStatus(summary, false)
 	else
-		controls.SelectionLabel.Text = "Terpilih: Tidak ada"
-		controls.SelectionLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		showStatus(string.format("✗ Gagal mengonversi %d GUI.", failCount), true)
 	end
 end
 
-button.Click:Connect(function()
-	configWidget.Enabled = not configWidget.Enabled
-end)
+-- Inisialisasi UI
+loadBlacklistProfiles()
+loadPresets()
+loadProjectDefaultPresets()
 
+local function updateLocationLabel()
+	if outputLocation and outputLocation.Parent then
+		controls.LocationLabel.Text = "Lokasi: " .. outputLocation:GetFullName()
+	else
+		controls.LocationLabel.Text = "Lokasi: Default"
+	end
+end
+
+local function loadOutputLocation()
+	local savedPath = plugin:GetSetting("OutputLocation")
+	if savedPath then
+		outputLocation = game:FindFirstChild(savedPath, true)
+	end
+	updateLocationLabel()
+end
+
+local uiSettings = {
+	COMMON_PROPERTIES = COMMON_PROPERTIES,
+	PROPERTIES_BY_CLASS = PROPERTIES_BY_CLASS,
+	stopSyncing = stopSyncing,
+	updateCodePreview = updateCodePreview,
+	saveProfile = saveCurrentProfile,
+	deleteProfile = deleteProfile,
+	applyProfile = applyBlacklistProfile,
+	getProfiles = function() return blacklistProfiles end,
+	getActiveProfile = function() return activeProfileName end,
+}
+controls = UI.create(configWidget, plugin, uiSettings)
+applyPreset(activePresetName) -- Terapkan preset awal
+applyProjectDefaultPreset() -- Timpa dengan default proyek jika ada
+loadOutputLocation()
+
+
+-- Definisi Fungsi Status (setelah `controls` ada)
 local statusTimer
-local function showStatus(message, isError)
+showStatus = function(message, isError)
 	if statusTimer then task.cancel(statusTimer) end
-
 	controls.StatusLabel.Text = message
 	controls.StatusLabel.TextColor3 = isError and Color3.fromRGB(255, 120, 120) or Color3.fromRGB(120, 255, 120)
 	controls.StatusLabel.Visible = true
-
 	statusTimer = task.delay(4, function()
 		controls.StatusLabel.Visible = false
 		controls.StatusLabel.Text = ""
 	end)
 end
+
+-- Koneksi Event
+contextualAction.Triggered:Connect(handleContextualConversion)
+button.Click:Connect(function() configWidget.Enabled = not configWidget.Enabled end)
+
+-- Event Handlers untuk Modal Preset
+controls.SavePresetButton.MouseButton1Click:Connect(function()
+	controls.SavePresetNameInput.Text = "" -- Bersihkan input saat membuka
+	controls.SavePresetModal.Visible = true
+end)
+
+controls.LoadPresetButton.MouseButton1Click:Connect(function()
+	updateLoadPresetModal() -- Selalu perbarui daftar saat membuka
+	controls.LoadPresetModal.Visible = true
+end)
+
+controls.ConfirmSavePresetButton.MouseButton1Click:Connect(function()
+	local name = controls.SavePresetNameInput.Text
+	saveCurrentPreset(name)
+	controls.SavePresetModal.Visible = false
+end)
+
+controls.CancelSavePresetButton.MouseButton1Click:Connect(function()
+	controls.SavePresetModal.Visible = false
+end)
+
+controls.CancelLoadPresetButton.MouseButton1Click:Connect(function()
+	controls.LoadPresetModal.Visible = false
+end)
 
 controls.ConvertButton.MouseButton1Click:Connect(function()
 	local blacklistedProps = {}
@@ -1037,57 +864,94 @@ controls.ConvertButton.MouseButton1Click:Connect(function()
 			table.insert(blacklistedProps, propName)
 		end
 	end
-	local blacklistString = table.concat(blacklistedProps, ",")
+	table.sort(blacklistedProps)
+	local blacklistJson = HttpService:JSONEncode(blacklistedProps)
+
+	local classBlacklist = {}
+	for className, checkboxData in pairs(controls.ClassBlacklistCheckboxes) do
+		if checkboxData.IsBlacklisted() then
+			table.insert(classBlacklist, className)
+		end
+	end
+	table.sort(classBlacklist)
 
 	local settings = {
 		ScriptType = controls.ScriptTypeButton.Text,
 		AddTraceComments = controls.IsCommentsEnabled(),
 		OverwriteExisting = controls.IsOverwriteEnabled(),
-		PropertyBlacklist = blacklistString,
-		LiveSyncEnabled = controls.IsLiveSyncEnabled()
+		PropertyBlacklist = blacklistJson,
+		ClassBlacklist = classBlacklist,
+		LiveSyncEnabled = controls.IsLiveSyncEnabled(),
+		AutoOpen = controls.IsAutoOpenEnabled()
 	}
 
-	local generated, rootObject = performConversion(settings)
-	if generated then
-		local successMsg, scriptInstance = createFile(generated, rootObject.Name, settings)
-		
-		plugin:SetSetting("ScriptType", settings.ScriptType)
-		plugin:SetSetting("AddTraceComments", settings.AddTraceComments)
-		plugin:SetSetting("OverwriteExisting", settings.OverwriteExisting)
-		plugin:SetSetting("PropertyBlacklist", settings.PropertyBlacklist)
-		plugin:SetSetting("LiveSyncEnabled", settings.LiveSyncEnabled)
-		
-		if settings.LiveSyncEnabled then
-			startSyncing(rootObject, scriptInstance, settings)
+	local selection = Selection:Get()
+	if #selection == 0 then
+		showStatus("✗ Tidak ada objek yang dipilih untuk dikonversi.", true)
+		return
+	end
+
+	local successCount = 0
+	local failCount = 0
+	local lastSuccessScript = nil
+	local lastSuccessRoot = nil
+
+	for _, rootObject in ipairs(selection) do
+		local generated, err = performConversion(rootObject, settings)
+		if generated then
+			local _, scriptInstance = createFile(generated, rootObject.Name, settings)
+			lastSuccessScript = scriptInstance
+			lastSuccessRoot = rootObject
+			successCount = successCount + 1
+		else
+			warn(string.format("[GUIConvert] Gagal mengonversi %s: %s", rootObject:GetFullName(), tostring(err)))
+			failCount = failCount + 1
+		end
+	end
+
+	plugin:SetSetting("ScriptType", settings.ScriptType)
+	plugin:SetSetting("AddTraceComments", settings.AddTraceComments)
+	plugin:SetSetting("OverwriteExisting", settings.OverwriteExisting)
+	plugin:SetSetting("PropertyBlacklist", settings.PropertyBlacklist)
+	plugin:SetSetting("LiveSyncEnabled", settings.LiveSyncEnabled)
+	plugin:SetSetting("AutoOpen", settings.AutoOpen)
+	if outputLocation then
+		plugin:SetSetting("OutputLocation", outputLocation:GetFullName())
+	end
+
+	if successCount > 0 then
+		if settings.LiveSyncEnabled and lastSuccessScript and lastSuccessRoot then
+			if #selection > 1 then
+				showStatus("✓ Peringatan: Live Sync hanya aktif pada objek terakhir.", false)
+				task.delay(2, function() startSyncing(lastSuccessRoot, lastSuccessScript, settings) end)
+			else
+				startSyncing(lastSuccessRoot, lastSuccessScript, settings)
+			end
 		else
 			stopSyncing()
-			showStatus("✓ " .. successMsg, false)
 		end
+
+		local summary = string.format("✓ Berhasil mengonversi %d GUI.", successCount)
+		if failCount > 0 then
+			summary = summary .. string.format(" (%d gagal)", failCount)
+		end
+		showStatus(summary, false)
 	else
-		showStatus("✗ " .. rootObject, true)
+		showStatus(string.format("✗ Gagal mengonversi %d GUI.", failCount), true)
 		stopSyncing()
 	end
 end)
 
-local function handleGetExampleCode()
+controls.SelectAllButton.MouseButton1Click:Connect(updateCodePreview)
+controls.ScriptTypeButton.MouseButton1Click:Connect(updateCodePreview)
+
+controls.ExampleCodeButton.MouseButton1Click:Connect(function()
 	local sel = Selection:Get()
-	if not sel or #sel == 0 then
-		showStatus("✗ Pilih ModuleScript untuk membuat contoh.", true)
-		return
-	end
-
+	if not sel or #sel == 0 then showStatus("✗ Pilih ModuleScript untuk membuat contoh.", true) return end
 	local moduleScript = sel[1]
-	if not moduleScript:IsA("ModuleScript") then
-		showStatus("✗ Objek terpilih bukan ModuleScript.", true)
-		return
-	end
-
+	if not moduleScript:IsA("ModuleScript") then showStatus("✗ Objek terpilih bukan ModuleScript.", true) return end
 	local parent = moduleScript.Parent
-	if not parent then
-		showStatus("✗ ModuleScript tidak memiliki induk.", true)
-		return
-	end
-
+	if not parent then showStatus("✗ ModuleScript tidak memiliki induk.", true) return end
 	local usageFolder = parent:FindFirstChild("GeneratedUsage")
 	if not usageFolder then
 		usageFolder = Instance.new("Folder")
@@ -1095,18 +959,533 @@ local function handleGetExampleCode()
 		usageFolder.Parent = parent
 	end
 
-	local exampleCode = generateExampleCode(moduleScript)
+	local rootObject = sel[2] -- Asumsikan objek root adalah item kedua yang dipilih
+	if not rootObject or not (rootObject:IsA("ScreenGui") or rootObject:IsA("SurfaceGui")) then
+		-- Fallback jika objek root tidak disediakan atau tidak valid
+		local selRoot = Selection:Get()
+		if selRoot and #selRoot > 0 and (selRoot[1]:IsA("ScreenGui") or selRoot[1]:IsA("SurfaceGui")) then
+			rootObject = selRoot[1]
+		end
+	end
 
+	local exampleCode = Utils.generateExampleCode(moduleScript, rootObject)
 	local exampleScript = Instance.new("LocalScript")
 	exampleScript.Name = "usage_for_" .. moduleScript.Name
 	exampleScript.Source = exampleCode
 	exampleScript.Parent = usageFolder
-
-	Selection:Set({exampleScript}) -- Pilih skrip yang baru dibuat
+	Selection:Set({exampleScript})
 	showStatus("✓ Contoh skrip penggunaan dibuat!", false)
+end)
+
+-- ----------------------------------------------------------------
+-- Fitur Sinkronisasi Balik
+-- ----------------------------------------------------------------
+
+-- Fungsi pembantu baru untuk menemukan turunan secara rekursif berdasarkan path string
+local function findDescendantByPath(root, path)
+	local current = root
+	for part in path:gmatch("([^%.]+)") do
+		current = current:FindFirstChild(part)
+		if not current then
+			return nil -- Jika ada bagian dari path yang tidak ditemukan
+		end
+	end
+	return current
 end
 
-controls.ExampleCodeButton.MouseButton1Click:Connect(handleGetExampleCode)
+local function applyChangesFromScript()
+	local sel = Selection:Get()
+	if not sel or #sel == 0 or not sel[1]:IsA("Script") then
+		showStatus("✗ Pilih skrip untuk menerapkan perubahan.", true)
+		return
+	end
+	local script = sel[1]
 
-Selection.SelectionChanged:Connect(updateSelectionDisplay)
-updateSelectionDisplay() -- Panggil sekali untuk status awal
+	showStatus("i Menganalisis skrip...", false)
+
+	local parsedData, err = ScriptParser.parse(script.Source)
+	if not parsedData then
+		showStatus("✗ " .. (err or "Gagal menganalisis skrip."), true)
+		return
+	end
+
+	if not parsedData.sourcePath then
+		showStatus("✗ Tidak dapat menemukan path sumber di dalam skrip.", true)
+		return
+	end
+
+	local rootInstance = game:FindFirstChild(parsedData.sourcePath, true)
+	if not rootInstance then
+		showStatus("✗ GUI asli di '" .. parsedData.sourcePath .. "' tidak ditemukan.", true)
+		return
+	end
+
+	local appliedChanges = 0
+	local failedChanges = 0
+
+	for varName, props in pairs(parsedData.properties) do
+		local relPath = parsedData.varPathMap[varName]
+		local targetInstance
+
+		if relPath == rootInstance.Name then -- Jika itu adalah root instance itu sendiri
+			targetInstance = rootInstance
+		else
+			-- Hapus nama root dari awal path
+			local cleanRelPath = relPath:gsub("^" .. rootInstance.Name .. ".", "")
+			targetInstance = findDescendantByPath(rootInstance, cleanRelPath)
+		end
+
+		if targetInstance then
+			for propName, valueString in pairs(props) do
+				local value, deserializeErr = Utils.deserializeValue(valueString)
+
+				if not deserializeErr then
+					local success, setErr = pcall(function()
+						targetInstance[propName] = value
+					end)
+
+					if success then
+						appliedChanges = appliedChanges + 1
+					else
+						warn(string.format("[GUIConvert] Gagal menerapkan properti %s ke %s: %s", propName, targetInstance:GetFullName(), tostring(setErr)))
+						failedChanges = failedChanges + 1
+					end
+				else
+					warn(string.format("[GUIConvert] Gagal mendeserialisasi '%s' untuk %s.%s: %s", valueString, targetInstance:GetFullName(), propName, tostring(deserializeErr)))
+					failedChanges = failedChanges + 1
+				end
+			end
+		else
+			warn("[GUIConvert] Tidak dapat menemukan instance untuk path relatif:", relPath)
+			failedChanges = failedChanges + #props -- Hitung semua properti di bawahnya sebagai gagal
+		end
+	end
+
+	local summary = string.format("✓ %d perubahan diterapkan.", appliedChanges)
+	if failedChanges > 0 then
+		summary = summary .. string.format(" (%d gagal)", failedChanges)
+	end
+	showStatus(summary, failedChanges > 0)
+
+	-- Pilih root instance di explorer untuk menunjukkan pekerjaan selesai
+	Selection:Set({rootInstance})
+end
+
+
+-- ----------------------------------------------------------------
+-- PERBAIKAN DIMULAI DI SINI
+-- ----------------------------------------------------------------
+
+-- Buat fungsi khusus untuk menangani pembaruan UI pemilihan
+local function updateSelectionUI()
+	local sel = Selection:Get()
+	local obj = sel and #sel == 1 and sel[1] or nil
+
+	-- Atur ulang semua status tombol terlebih dahulu
+	controls.IgnoreButton.Visible = false
+	controls.SetScriptTypeEnabled(true)
+	controls.SetApplyButtonEnabled(false)
+
+	if not obj then
+		controls.SelectionLabel.Text = "Terpilih: Tidak ada"
+		controls.SelectionLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		return
+	end
+
+	if obj:IsA("Script") then
+		controls.SelectionLabel.Text = string.format("Terpilih: %s (Script)", obj.Name)
+		controls.SelectionLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
+		controls.SetApplyButtonEnabled(true) -- Aktifkan tombol terapkan
+		controls.SetScriptTypeEnabled(false) -- Nonaktifkan tombol tipe skrip
+	elseif (Utils.isGuiObject(obj) or obj:IsA("ScreenGui")) then
+		controls.SelectionLabel.Text = string.format("Terpilih: %s (%s)", obj.Name, obj.ClassName)
+		controls.SelectionLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
+		local isIgnored = obj:GetAttribute("ConvertIgnore") == true
+		controls.IgnoreButton.Visible = true
+		if isIgnored then
+			controls.IgnoreButton.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
+			controls.IgnoreButton.Text = " [X] Abaikan Objek & Turunannya"
+		else
+			controls.IgnoreButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+			controls.IgnoreButton.Text = " [ ] Abaikan Objek & Turunannya"
+		end
+
+		if obj:IsA("SurfaceGui") then
+			controls.ScriptTypeButton.Text = "ModuleScript"
+			controls.SetScriptTypeEnabled(false)
+		end
+	else
+		controls.SelectionLabel.Text = "Terpilih: Objek tidak valid"
+		controls.SelectionLabel.TextColor3 = Color3.fromRGB(255, 180, 180)
+	end
+end
+
+-- Hubungkan sinyal ke fungsi baru
+Selection.SelectionChanged:Connect(function()
+	updateSelectionUI()
+	updateCodePreview()
+end)
+
+controls.IgnoreButton.MouseButton1Click:Connect(function()
+	local sel = Selection:Get()
+	local obj = sel and sel[1]
+	if obj and (Utils.isGuiObject(obj) or obj:IsA("ScreenGui")) then
+		local isIgnored = obj:GetAttribute("ConvertIgnore") == true
+		obj:SetAttribute("ConvertIgnore", not isIgnored)
+
+		-- PERBAIKAN: Panggil fungsi secara langsung, bukan :Fire()
+		updateSelectionUI()
+		updateCodePreview()
+
+		if syncingInstance then reSync() end
+	end
+end)
+
+-- Inisialisasi status UI awal
+-- PERBAIKAN: Panggil fungsi secara langsung, bukan :Fire()
+updateSelectionUI()
+
+controls.ApplyFromScriptButton.MouseButton1Click:Connect(applyChangesFromScript)
+
+controls.SelectLocationButton.MouseButton1Click:Connect(function()
+	showStatus("ℹ️ Pilih folder di Explorer lalu klik tombol ini lagi.", false)
+
+	local sel = Selection:Get()
+	if sel and #sel > 0 then
+		local chosen = sel[1]
+		if chosen:IsA("Folder") or chosen:IsA("ReplicatedStorage") or chosen:IsA("StarterPlayerScripts") then
+			outputLocation = chosen
+			updateLocationLabel()
+			showStatus("✓ Lokasi output diatur ke: " .. chosen:GetFullName(), false)
+		else
+			showStatus("✗ Lokasi tidak valid. Silakan pilih Folder.", true)
+		end
+	end
+end)
+
+controls.ExportProfileButton.MouseButton1Click:Connect(function()
+	local profile = blacklistProfiles[activeProfileName]
+	if not profile then
+		showStatus("✗ Tidak ada profil aktif untuk diekspor.", true)
+		return
+	end
+
+	local success, encoded = pcall(HttpService.JSONEncode, HttpService, profile)
+	if success then
+		controls.ImportExportTextBox.Text = encoded
+		controls.ImportExportModal.Title = "Ekspor Profil: " .. activeProfileName
+		controls.ImportExportModal.Visible = true
+		controls.ImportExportConfirmButton.Text = "Tutup" -- Hanya ada aksi tutup untuk ekspor
+	else
+		showStatus("✗ Gagal mengenkode profil untuk ekspor.", true)
+		warn("[GUIConvert] Gagal mengenkode profil JSON:", encoded)
+	end
+end)
+
+controls.ImportProfileButton.MouseButton1Click:Connect(function()
+	controls.ImportExportTextBox.Text = "" -- Bersihkan untuk input
+	controls.ImportExportTextBox.PlaceholderText = "Tempelkan data profil JSON di sini..."
+	controls.ImportExportModal.Title = "Impor Profil Baru"
+	controls.ImportExportModal.Visible = true
+	controls.ImportExportConfirmButton.Text = "Impor"
+end)
+
+controls.ImportExportConfirmButton.MouseButton1Click:Connect(function()
+	if controls.ImportExportConfirmButton.Text == "Tutup" then
+		controls.ImportExportModal.Visible = false
+		return
+	end
+
+	-- Logika impor
+	local text = controls.ImportExportTextBox.Text
+	if text == "" then
+		showStatus("✗ Kotak teks kosong. Tidak ada yang diimpor.", true)
+		return
+	end
+
+	local success, decoded = pcall(HttpService.JSONDecode, HttpService, text)
+	if not success then
+		showStatus("✗ Data JSON tidak valid.", true)
+		warn("[GUIConvert] Gagal mendekode JSON impor:", decoded)
+		return
+	end
+
+	-- Validasi tipe data yang didekode
+	if type(decoded) ~= "table" then
+		showStatus("✗ JSON harus berupa array string.", true)
+		return
+	end
+	for _, val in ipairs(decoded) do
+		if type(val) ~= "string" then
+			showStatus("✗ JSON harus berupa array string.", true)
+			return
+		end
+	end
+
+	-- Minta nama untuk profil baru
+	local newName = controls.ProfileNameInput.Text
+	if newName == "" or blacklistProfiles[newName] then
+		newName = "Profil Impor " .. os.date("%H%M%S")
+	end
+
+	blacklistProfiles[newName] = decoded
+	table.sort(blacklistProfiles[newName])
+	saveBlacklistProfiles()
+	applyBlacklistProfile(newName)
+
+	showStatus("✓ Profil '" .. newName .. "' berhasil diimpor.", false)
+	controls.ImportExportModal.Visible = false
+	controls.ProfileNameInput.Text = "" -- Reset input name
+end)
+
+controls.ImportExportCloseButton.MouseButton1Click:Connect(function()
+	controls.ImportExportModal.Visible = false
+end)
+
+controls.ManageProfilesButton.MouseButton1Click:Connect(function()
+	controls.updateProfileList(blacklistProfiles, activeProfileName) -- Selalu perbarui daftar saat dibuka
+	controls.ProfileManagerModal.Visible = true
+end)
+
+controls.ProfileManagerCloseButton.MouseButton1Click:Connect(function()
+	controls.ProfileManagerModal.Visible = false
+end)
+
+local function setPasteButtonEnabled(enabled)
+	controls.PasteStyleButton.Selectable = enabled
+	controls.PasteStyleButton.AutoButtonColor = enabled
+	if enabled then
+		controls.PasteStyleButton.BackgroundColor3 = Color3.fromRGB(80, 120, 200)
+		controls.PasteStyleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	else
+		controls.PasteStyleButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+		controls.PasteStyleButton.TextColor3 = Color3.fromRGB(150, 150, 150)
+	end
+end
+
+local function copyStyle()
+	local sel = Selection:Get()
+	local source = sel and #sel == 1 and sel[1] or nil
+	if not source or not source:IsA("GuiObject") then
+		showStatus("✗ Pilih satu GuiObject untuk menyalin gayanya.", true)
+		return
+	end
+
+	copiedStyle = {
+		Properties = {},
+		Children = {}
+	}
+
+	local relevantProps = {
+		"AnchorPoint", "AutomaticSize", "Position", "Rotation", "Size", "SizeConstraint",
+		"BackgroundColor3", "BackgroundTransparency", "BorderSizePixel", "BorderColor3", "BorderMode",
+		"Image", "ImageTransparency", "ImageColor3", "ScaleType", "SliceCenter", "SliceScale",
+		"Text", "TextColor3", "TextSize", "TextScaled", "Font", "TextWrapped", "TextXAlignment", "TextYAlignment",
+		"FontFace", "LineHeight", "RichText"
+	}
+
+	for _, propName in ipairs(relevantProps) do
+		local success, value = pcall(function() return source[propName] end)
+		if success then
+			copiedStyle.Properties[propName] = value
+		end
+	end
+
+	for _, child in ipairs(source:GetChildren()) do
+		local childClass = child.ClassName
+		if childClass == "UICorner" or childClass == "UIStroke" or childClass == "UIGradient" or childClass == "UIPadding" then
+			copiedStyle.Children[childClass] = copiedStyle.Children[childClass] or {}
+			local childProps = PROPERTIES_BY_CLASS[childClass] or {}
+			for _, propName in ipairs(childProps) do
+				local success, value = pcall(function() return child[propName] end)
+				if success then
+					copiedStyle.Children[childClass][propName] = value
+				end
+			end
+		end
+	end
+
+	setPasteButtonEnabled(true)
+	showStatus("✓ Gaya disalin dari '" .. source.Name .. "'.", false)
+end
+
+controls.CopyStyleButton.MouseButton1Click:Connect(copyStyle)
+
+local pasteCheckboxes = {}
+local function pasteStyle()
+	local sel = Selection:Get()
+	if not sel or #sel == 0 then
+		showStatus("✗ Pilih satu atau lebih GuiObject target untuk menempel gaya.", true)
+		return
+	end
+	if not copiedStyle then
+		showStatus("✗ Salin gaya terlebih dahulu!", true)
+		return
+	end
+
+	-- Hapus item lama dan reset
+	local listFrame = controls.PasteStyleListFrame
+	for _, child in ipairs(listFrame:GetChildren()) do
+		if child:IsA("GuiObject") and not child:IsA("UIListLayout") then
+			child:Destroy()
+		end
+	end
+	pasteCheckboxes = {}
+
+	-- Buat checkbox helper
+	local function createCheckbox(text, group, propName, isChild)
+		local isToggled = true -- Default ke terpilih
+		local row = Instance.new("TextButton")
+		row.Name = text
+		row.Size = UDim2.new(1, 0, 0, 24)
+		row.Font = Enum.Font.SourceSans
+		row.TextSize = 14
+		row.TextXAlignment = Enum.TextXAlignment.Left
+		row.Parent = listFrame
+
+		local function updateVisuals()
+			if isToggled then
+				row.Text = "  [X] " .. text
+				row.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+			else
+				row.Text = "  [ ] " .. text
+				row.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+			end
+		end
+
+		row.MouseButton1Click:Connect(function()
+			isToggled = not isToggled
+			updateVisuals()
+		end)
+
+		updateVisuals()
+		table.insert(pasteCheckboxes, {
+			IsToggled = function() return isToggled end,
+			Group = group,
+			PropName = propName,
+			IsChild = isChild,
+		})
+	end
+
+	-- Isi dengan properti utama
+	for propName, _ in pairs(copiedStyle.Properties) do
+		createCheckbox(propName, "Properties", propName, false)
+	end
+
+	-- Isi dengan properti turunan
+	for childClass, props in pairs(copiedStyle.Children) do
+		local header = Instance.new("TextLabel")
+		header.Size = UDim2.new(1, 0, 0, 26)
+		header.Text = "  ▾ " .. childClass
+		header.Font = Enum.Font.SourceSansBold
+		header.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+		header.TextXAlignment = Enum.TextXAlignment.Left
+		header.Parent = listFrame
+		for propName, _ in pairs(props) do
+			createCheckbox("  " .. propName, childClass, propName, true)
+		end
+	end
+
+	controls.PasteStyleModal.Visible = true
+end
+
+controls.PasteStyleButton.MouseButton1Click:Connect(pasteStyle)
+
+controls.CancelStyleButton.MouseButton1Click:Connect(function()
+	controls.PasteStyleModal.Visible = false
+end)
+
+controls.ApplyStyleButton.MouseButton1Click:Connect(function()
+	local sel = Selection:Get()
+	if not sel or #sel == 0 or not copiedStyle then return end
+
+	local changesApplied = 0
+	for _, target in ipairs(sel) do
+		if target:IsA("GuiObject") then
+			for _, checkbox in ipairs(pasteCheckboxes) do
+				if checkbox:IsToggled() then
+					local propName = checkbox.PropName
+					local group = checkbox.Group
+
+					if checkbox.IsChild then
+						-- Handle child properties (e.g., UICorner.CornerRadius)
+						local child = target:FindFirstChildOfClass(group)
+						if not child then
+							child = Instance.new(group)
+							child.Parent = target
+						end
+						local value = copiedStyle.Children[group][propName]
+						local ok, err = pcall(function() child[propName] = value end)
+						if ok then changesApplied = changesApplied + 1 else warn(err) end
+					else
+						-- Handle main object properties
+						local value = copiedStyle.Properties[propName]
+						local ok, err = pcall(function() target[propName] = value end)
+						if ok then changesApplied = changesApplied + 1 else warn(err) end
+					end
+				end
+			end
+		end
+	end
+
+	controls.PasteStyleModal.Visible = false
+	showStatus(string.format("✓ %d gaya diterapkan pada %d objek.", changesApplied, #sel), false)
+end)
+
+local function insertComponentCode()
+	local sel = Selection:Get()
+	if #sel ~= 2 then
+		showStatus("✗ Pilih DUA objek: komponen ModuleScript & skrip target.", true)
+		return
+	end
+
+	local componentScript, targetScript
+	for _, obj in ipairs(sel) do
+		if obj:IsA("ModuleScript") and obj:IsDescendantOf(game:GetService("ReplicatedStorage")) then
+			componentScript = obj
+		elseif obj:IsA("Script") or obj:IsA("ModuleScript") then
+			targetScript = obj
+		end
+	end
+
+	if not componentScript or not targetScript then
+		showStatus("✗ Pilih komponen ModuleScript & skrip target.", true)
+		return
+	end
+
+	local componentName = componentScript.Name
+	local componentVarName = componentName .. "Module"
+	local componentPath = componentScript:GetFullName():gsub("ReplicatedStorage", "game:GetService(\"ReplicatedStorage\")")
+
+	local source = targetScript.Source
+
+	-- 1. Sisipkan 'require' jika belum ada
+	local requireLine = string.format("local %s = require(%s)", componentVarName, componentPath)
+	if not source:find(requireLine, 1, true) then
+		-- Cari baris kosong pertama setelah blok variabel atau di awal file
+		local _, endOfVars = source:find("%)%s*\n\n") -- setelah GetService() block
+		if endOfVars then
+			source = source:sub(1, endOfVars) .. requireLine .. "\n" .. source:sub(endOfVars + 1)
+		else
+			source = requireLine .. "\n" .. source
+		end
+	end
+
+	-- 2. Sisipkan baris 'create' di dalam USER_CODE block
+	local createLine = string.format("local new%s = %s.create()", componentName, componentVarName)
+	local userCodeStart = "--// USER_CODE_START"
+	local startIdx, endIdx = source:find(userCodeStart, 1, true)
+
+	if startIdx then
+		local insertPos = startIdx + #userCodeStart
+		source = source:sub(1, insertPos) .. "\n" .. createLine .. source:sub(insertPos + 1)
+	else
+		source = source .. "\n\n" .. userCodeStart .. "\n" .. createLine .. "\n--// USER_CODE_END\n"
+	end
+
+	targetScript.Source = source
+	plugin:OpenScript(targetScript)
+	showStatus("✓ Kode komponen '"..componentName.."' disisipkan.", false)
+end
+
+controls.InsertComponentButton.MouseButton1Click:Connect(insertComponentCode)
